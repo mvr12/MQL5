@@ -4,8 +4,8 @@
 //+------------------------------------------------------------------+
 #property strict
 #property indicator_chart_window
-#property indicator_plots   5
-#property indicator_buffers 5
+#property indicator_plots   6
+#property indicator_buffers 6
 
 #property indicator_label1  "BUY"
 #property indicator_type1   DRAW_ARROW
@@ -32,6 +32,13 @@
 #property indicator_color5  clrDodgerBlue
 #property indicator_style5  STYLE_SOLID
 #property indicator_width5  2
+
+
+#property indicator_label6  "Trend Line 2"
+#property indicator_type6   DRAW_LINE
+#property indicator_color6  clrOrange
+#property indicator_style6  STYLE_SOLID
+#property indicator_width6  2
 
 
 //==================================================================
@@ -61,8 +68,14 @@ enum ENUM_TREND_SOURCE
 enum ENUM_SLOT_MODE
 {
    SLOT_MODE_BUFFERS      = 0, // بافر خرید / فروش
-   SLOT_MODE_CROSS_SIGNAL = 1, // کراس دو بافر = خرید/فروش
-   SLOT_MODE_CROSS_TREND  = 2  // کراس/موقعیت دو بافر = روند (فیلتر)
+   SLOT_MODE_CROSS_SIGNAL = 1, // کراس دو بافر همان اندیکاتور = خرید/فروش
+   SLOT_MODE_CROSS_TREND  = 2  // موقعیت دو بافر همان اندیکاتور = فیلتر روند
+};
+
+enum ENUM_TREND_CROSS_ROLE
+{
+   TREND_CROSS_SIGNAL    = 0, // کراس خط روند Ind1 با Ind2 = سیگنال خرید/فروش
+   TREND_CROSS_NEW_TREND = 1  // کراس = شروع روند جدید و بعد فیلتر جهت
 };
 
 
@@ -105,10 +118,17 @@ input ENUM_TREND_SIDE    TrendSideRule         = TREND_BUY_ABOVE_SELL_BELOW;
 
 input group "=== Trend Angle (degrees) ==="
 input bool   UseTrendAngleFilter = false;
-input int    TrendAnglePeriod    = 5;     // چند کندل برای شیب
-input double TrendAngleBuyMin    = 10.0;  // >= این درجه = BUY
-input double TrendAngleSellMax   = -10.0; // <= این درجه = SELL
-                                          // بین این دو = NEUTRAL
+input int    TrendAnglePeriod    = 5;
+input double AngleBuyFrom        = 25.0;
+input double AngleBuyTo          = 75.0;
+input double AngleSellFrom       = -90.0;
+input double AngleSellTo         = -38.0;
+
+input group "=== Cross of two trend lines ==="
+input bool                  UseTrendLineCross = false;
+input ENUM_TREND_CROSS_ROLE TrendCrossRole    = TREND_CROSS_SIGNAL;
+input int                   TrendLine1_Buffer = 0;
+input int                   TrendLine2_Buffer = 0;
 
 
 //==================================================================
@@ -163,16 +183,21 @@ double SellSignalBuffer[];
 double SuccessBuffer[];
 double FailureBuffer[];
 double TrendLineBuffer[];
+double TrendLine2Buffer[];
 
 double Buffer1_Buy[];
 double Buffer1_Sell[];
 double Buffer2_Buy[];
 double Buffer2_Sell[];
 double BufferTrend[];
+double Buffer1_Trend[];
+double Buffer2_Trend[];
 
-int CopiedTrend = 0;
-int Copied1     = 0;
-int Copied2     = 0;
+int CopiedTrend  = 0;
+int Copied1      = 0;
+int Copied2      = 0;
+int CopiedTrend1 = 0;
+int CopiedTrend2 = 0;
 
 
 //==================================================================
@@ -396,6 +421,19 @@ int GetSourceSignal(const int shift, const int max_copied)
       if(dir != -1) wantSell = false;
    }
 
+   if(UseTrendLineCross && TrendCrossRole == TREND_CROSS_SIGNAL)
+   {
+      hasSignalSlot = true;
+      int dir = 0;
+      int copied = MathMin(CopiedTrend1, CopiedTrend2);
+      if(IsCrossUp(Buffer1_Trend, Buffer2_Trend, shift, copied))
+         dir = 1;
+      else if(IsCrossDown(Buffer1_Trend, Buffer2_Trend, shift, copied))
+         dir = -1;
+      if(dir != 1)  wantBuy  = false;
+      if(dir != -1) wantSell = false;
+   }
+
    if(!hasSignalSlot)
       return 0;
    if(wantBuy && !wantSell)
@@ -516,14 +554,30 @@ double GetTrendAngle(const int shift)
    return MathArctan(dy / dx) * 180.0 / M_PI;
 }
 
+bool InRange(const double value, const double from, const double to)
+{
+   double lo = MathMin(from, to);
+   double hi = MathMax(from, to);
+   return (value >= lo && value <= hi);
+}
+
 int GetTrendAngleState(const int shift)
 {
    double angle = GetTrendAngle(shift);
-   if(angle >= TrendAngleBuyMin)
+   if(InRange(angle, AngleBuyFrom, AngleBuyTo))
       return 1;
-   if(angle <= TrendAngleSellMax)
+   if(InRange(angle, AngleSellFrom, AngleSellTo))
       return -1;
    return 0;
+}
+
+bool IsTwoTrendCrossConfirmed(const int signal, const int shift)
+{
+   if(!UseTrendLineCross || TrendCrossRole != TREND_CROSS_NEW_TREND)
+      return true;
+   int copied = MathMin(CopiedTrend1, CopiedTrend2);
+   int pos = CrossPosition(Buffer1_Trend, Buffer2_Trend, shift, copied);
+   return (pos != 0 && pos == signal);
 }
 
 bool IsTrendAngleConfirmed(const int signal, const int shift)
@@ -549,6 +603,8 @@ bool IsTrendConfirmed(
    if(!IsCrossTrendConfirmed(signal, shift))
       return false;
    if(!IsTrendAngleConfirmed(signal, shift))
+      return false;
+   if(!IsTwoTrendCrossConfirmed(signal, shift))
       return false;
    return true;
 }
@@ -664,7 +720,24 @@ void CalculateStatistics(
 void DrawTrendLine(const int rates_total, const int max_copied)
 {
    ArrayInitialize(TrendLineBuffer, EMPTY_VALUE);
-   if(!UseTrendIndicator || !ShowTrendLine)
+   ArrayInitialize(TrendLine2Buffer, EMPTY_VALUE);
+   if(!ShowTrendLine)
+      return;
+
+   if(UseTrendLineCross)
+   {
+      int oldest = MathMin(MathMin(rates_total - 1, CopiedTrend1 - 1), CopiedTrend2 - 1);
+      for(int shift = oldest; shift >= 0; shift--)
+      {
+         if(IsValidTrendValue(Buffer1_Trend[shift]))
+            TrendLineBuffer[shift] = Buffer1_Trend[shift];
+         if(IsValidTrendValue(Buffer2_Trend[shift]))
+            TrendLine2Buffer[shift] = Buffer2_Trend[shift];
+      }
+      return;
+   }
+
+   if(!UseTrendIndicator)
       return;
 
    int oldest = MathMin(MathMin(rates_total - 1, max_copied - 1), CopiedTrend - 1);
@@ -798,7 +871,11 @@ void ShowStats()
       "Ind 2 [" + SlotState(UseIndicator2) + "] " + SlotModeText(Indicator2_Mode) + "\n" +
       "Trend [" + SlotState(UseTrendIndicator) + "] " + trendSourceText + "\n" +
       "Line filter : " + (UseTrendLineFilter ? "ON" : "OFF") +
-      " | Angle filter: " + (UseTrendAngleFilter ? "ON" : "OFF") + "\n" +
+      " | Angle: " + (UseTrendAngleFilter ? "ON" : "OFF") + "\n" +
+      "Angle ranges: BUY " + DoubleToString(AngleBuyFrom, 0) + ".." + DoubleToString(AngleBuyTo, 0) +
+      " | SELL " + DoubleToString(AngleSellFrom, 0) + ".." + DoubleToString(AngleSellTo, 0) +
+      " | else NEUTRAL\n" +
+      "Trend cross : " + (UseTrendLineCross ? (TrendCrossRole == TREND_CROSS_SIGNAL ? "SIGNAL" : "NEW TREND") : "OFF") + "\n" +
       "Compare     : " + CompareModeText() + " vs line\n" +
       "Lookback    : last " + lookbackText + " bars (" + IntegerToString(CountedBarsWindow) + " scanned)\n" +
       "Outcome N   : " + IntegerToString(BarsForward) + " candles after signal\n" +
@@ -828,11 +905,18 @@ int OnInit()
 {
    bool hasSignal =
       SlotIsSignalSource(UseIndicator1, Indicator1_Mode) ||
-      SlotIsSignalSource(UseIndicator2, Indicator2_Mode);
+      SlotIsSignalSource(UseIndicator2, Indicator2_Mode) ||
+      (UseTrendLineCross && TrendCrossRole == TREND_CROSS_SIGNAL);
 
    if(!hasSignal)
    {
-      Print("ERROR: Enable at least one slot in BUFFERS or CROSS SIGNAL mode.");
+      Print("ERROR: Enable a signal source (slot BUFFERS/CROSS SIGNAL or two-trend-line cross).");
+      return INIT_FAILED;
+   }
+
+   if(UseTrendLineCross && (!UseIndicator1 || !UseIndicator2))
+   {
+      Print("ERROR: Two-indicator trend cross needs both custom indicators enabled.");
       return INIT_FAILED;
    }
 
@@ -888,12 +972,14 @@ int OnInit()
    SetIndexBuffer(2, SuccessBuffer,    INDICATOR_DATA);
    SetIndexBuffer(3, FailureBuffer,    INDICATOR_DATA);
    SetIndexBuffer(4, TrendLineBuffer,  INDICATOR_DATA);
+   SetIndexBuffer(5, TrendLine2Buffer, INDICATOR_DATA);
 
    ArraySetAsSeries(BuySignalBuffer,  true);
    ArraySetAsSeries(SellSignalBuffer, true);
    ArraySetAsSeries(SuccessBuffer,    true);
    ArraySetAsSeries(FailureBuffer,    true);
    ArraySetAsSeries(TrendLineBuffer,  true);
+   ArraySetAsSeries(TrendLine2Buffer, true);
 
    PlotIndexSetInteger(0, PLOT_ARROW, 233);
    PlotIndexSetInteger(1, PLOT_ARROW, 234);
@@ -907,6 +993,7 @@ int OnInit()
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(4, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetDouble(5, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    IndicatorSetString(INDICATOR_SHORTNAME, "Strategy Combiner v1.2");
    return INIT_SUCCEEDED;
@@ -960,7 +1047,9 @@ int OnCalculate(
    ArraySetAsSeries(Buffer1_Sell, true);
    ArraySetAsSeries(Buffer2_Buy,  true);
    ArraySetAsSeries(Buffer2_Sell, true);
-   ArraySetAsSeries(BufferTrend,  true);
+   ArraySetAsSeries(BufferTrend,    true);
+   ArraySetAsSeries(Buffer1_Trend,  true);
+   ArraySetAsSeries(Buffer2_Trend,  true);
 
    int max_copied = rates_total;
    Copied1 = 0;
@@ -1010,6 +1099,17 @@ int OnCalculate(
       if(CopiedTrend <= BarsForward)
          return prev_calculated;
       max_copied = MathMin(max_copied, CopiedTrend);
+   }
+
+   CopiedTrend1 = 0;
+   CopiedTrend2 = 0;
+   if(UseTrendLineCross)
+   {
+      CopiedTrend1 = CopyBuffer(Handle1, TrendLine1_Buffer, 0, rates_total, Buffer1_Trend);
+      CopiedTrend2 = CopyBuffer(Handle2, TrendLine2_Buffer, 0, rates_total, Buffer2_Trend);
+      if(CopiedTrend1 <= BarsForward || CopiedTrend2 <= BarsForward)
+         return prev_calculated;
+      max_copied = MathMin(max_copied, MathMin(CopiedTrend1, CopiedTrend2));
    }
 
    CalculateStatistics(rates_total, time, open, high, low, close, max_copied);

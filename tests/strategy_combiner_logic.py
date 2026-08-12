@@ -55,8 +55,12 @@ class CombinerConfig:
     use_trend_line_filter: bool = True
     use_trend_angle_filter: bool = False
     trend_angle_period: int = 5
-    trend_angle_buy_min: float = 10.0
-    trend_angle_sell_max: float = -10.0
+    angle_buy_from: float = 25.0
+    angle_buy_to: float = 75.0
+    angle_sell_from: float = -90.0
+    angle_sell_to: float = -38.0
+    use_trend_line_cross: bool = False
+    trend_cross_role: str = "signal"  # signal | new_trend
     pip_size: float = 0.0001
     stats_lookback_bars: int = 0
     trend_compare: str = TREND_CMP_CLOSE
@@ -328,13 +332,18 @@ def trend_angle(bars: Sequence[Bar], shift: int, cfg: CombinerConfig) -> float:
     return math.degrees(math.atan(dy / dx))
 
 
-def trend_angle_state(bars: Sequence[Bar], shift: int, cfg: CombinerConfig) -> int:
-    angle = trend_angle(bars, shift, cfg)
-    if angle >= cfg.trend_angle_buy_min:
+def angle_state_from_value(angle: float, cfg: CombinerConfig) -> int:
+    lo_buy, hi_buy = sorted((cfg.angle_buy_from, cfg.angle_buy_to))
+    lo_sell, hi_sell = sorted((cfg.angle_sell_from, cfg.angle_sell_to))
+    if lo_buy <= angle <= hi_buy:
         return 1
-    if angle <= cfg.trend_angle_sell_max:
+    if lo_sell <= angle <= hi_sell:
         return -1
     return 0
+
+
+def trend_angle_state(bars: Sequence[Bar], shift: int, cfg: CombinerConfig) -> int:
+    return angle_state_from_value(trend_angle(bars, shift, cfg), cfg)
 
 
 def is_cross_trend_ok(bar: Bar, signal: int, cfg: CombinerConfig) -> bool:

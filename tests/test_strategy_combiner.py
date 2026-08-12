@@ -448,10 +448,20 @@ class LookbackPipsCrossAngleTests(unittest.TestCase):
 
     def test_angle_neutral_blocks_signal(self):
         from strategy_combiner_logic import is_trend_confirmed_at
-        cfg = CombinerConfig(use_trend_angle_filter=True, trend_angle_period=2,
-                             trend_angle_buy_min=20, trend_angle_sell_max=-20, pip_size=0.0001)
+        cfg = CombinerConfig(use_trend_angle_filter=True, trend_angle_period=2, pip_size=0.0001)
         bars = [bar(datetime(2026, 8, 3, i, 0), 1.1000, trend=1.1000, i1_buy=1.0, i2_buy=1.0) for i in range(20)]
         self.assertFalse(is_trend_confirmed_at(bars, 5, 1, cfg))
+
+    def test_angle_ranges_buy_neutral_sell(self):
+        from strategy_combiner_logic import angle_state_from_value
+        cfg = CombinerConfig()
+        self.assertEqual(angle_state_from_value(40.0, cfg), 1)    # 25..75 buy
+        self.assertEqual(angle_state_from_value(75.0, cfg), 1)
+        self.assertEqual(angle_state_from_value(80.0, cfg), 0)    # too steep = neutral
+        self.assertEqual(angle_state_from_value(0.0, cfg), 0)     # -38..25 neutral
+        self.assertEqual(angle_state_from_value(-20.0, cfg), 0)
+        self.assertEqual(angle_state_from_value(-38.0, cfg), -1)  # <= -38 sell
+        self.assertEqual(angle_state_from_value(-60.0, cfg), -1)
 
 
 if __name__ == "__main__":
