@@ -54,6 +54,16 @@ const SCENARIOS = [
     title: "کندل در حال تشکیل",
     desc: "سیگنال‌های خیلی جدید در آمار نیستند",
   },
+  {
+    id: "trend-filter",
+    title: "تأیید خط روند",
+    desc: "خرید زیر خط حذف می‌شود؛ خرید بالای خط می‌ماند",
+  },
+  {
+    id: "single-slot",
+    title: "فقط اندیکاتور ۱",
+    desc: "اسلات ۲ خاموش → سیگنال تکی",
+  },
 ];
 
 let activeScenario = "and-buy-win";
@@ -77,7 +87,18 @@ function makeBar(time, close, extras = {}) {
     i1Sell: extras.i1Sell ?? EMPTY_VALUE,
     i2Buy: extras.i2Buy ?? EMPTY_VALUE,
     i2Sell: extras.i2Sell ?? EMPTY_VALUE,
+    trend: extras.trend,
   };
+}
+
+function attachSma(bars, period = 8) {
+  for (let i = 0; i < bars.length; i++) {
+    const from = Math.max(0, i - period + 1);
+    let sum = 0;
+    for (let j = from; j <= i; j++) sum += bars[j].close;
+    bars[i].trend = sum / (i - from + 1);
+  }
+  return bars;
 }
 
 function hourlySeries(start, count, priceFn) {
@@ -87,10 +108,21 @@ function hourlySeries(start, count, priceFn) {
     const close = priceFn(i, t);
     bars.push(makeBar(t, close));
   }
-  return bars;
+  return attachSma(bars);
 }
 
 function buildScenario(id, cfg) {
+  if (id === "single-slot") {
+    document.getElementById("useInd1").checked = true;
+    document.getElementById("useInd2").checked = false;
+    cfg.useIndicator1 = true;
+    cfg.useIndicator2 = false;
+  }
+  if (id === "trend-filter") {
+    document.getElementById("useTrend").checked = true;
+    cfg.useTrend = true;
+  }
+
   const start = new Date(2026, 7, 3, 0, 0, 0); // Monday 2026-08-03
   let bars = hourlySeries(start, 36, (i) => 100 + Math.sin(i / 3) * 1.2 + i * 0.05);
 
@@ -98,7 +130,7 @@ function buildScenario(id, cfg) {
     const idx = hourOffset;
     if (idx < 0 || idx >= bars.length) return;
     const prev = bars[idx];
-    bars[idx] = makeBar(prev.time, close ?? prev.close, extras);
+    bars[idx] = makeBar(prev.time, close ?? prev.close, { trend: prev.trend, ...extras });
   };
 
   if (id === "and-buy-win") {
@@ -163,6 +195,18 @@ function buildScenario(id, cfg) {
     bars[n - 2] = makeBar(bars[n - 2].time, 119, { i1Buy: 1, i2Buy: 1 });
     bars[n - 3] = makeBar(bars[n - 3].time, 118, { i1Buy: 1, i2Buy: 1 });
     bars[n - 4] = makeBar(bars[n - 4].time, 110, { i1Buy: 1, i2Buy: 1 });
+  } else if (id === "trend-filter") {
+    cfg.useTrend = true;
+    document.getElementById("useTrend").checked = true;
+    mark(8, { i1Buy: 1, i2Buy: 1, trend: 120 }, 100); // below trend -> filtered
+    mark(10, {}, 104);
+    mark(16, { i1Buy: 1, i2Buy: 1, trend: 90 }, 102); // above trend -> kept
+    mark(18, {}, 105);
+  } else if (id === "single-slot") {
+    cfg.useIndicator2 = false;
+    document.getElementById("useInd2").checked = false;
+    mark(10, { i1Buy: 1 }, 100);
+    mark(12, {}, 103);
   }
 
   return { bars, cfg };
@@ -179,6 +223,11 @@ function readConfig() {
     startMinute: Number(start[1]),
     endHour: Number(end[0]),
     endMinute: Number(end[1]),
+    useIndicator1: document.getElementById("useInd1").checked,
+    useIndicator2: document.getElementById("useInd2").checked,
+    useTrend: document.getElementById("useTrend").checked,
+    trendCompare: document.getElementById("trendCompare").value,
+    buyAboveSellBelow: true,
   };
   DAY_KEYS.forEach(([key]) => {
     cfg[key] = document.getElementById("day-" + key).checked;
@@ -268,6 +317,22 @@ function drawChart(bars, drawn) {
     ctx.fillText(price.toFixed(2), padL - 6, y + 3);
   }
 
+  ctx.beginPath();
+  ctx.strokeStyle = "#4d8dff";
+  ctx.lineWidth = 2;
+  let started = false;
+  bars.forEach((b, i) => {
+    if (!Number.isFinite(b.trend)) return;
+    const x = padL + i * xStep + xStep / 2;
+    if (!started) {
+      ctx.moveTo(x, yOf(b.trend));
+      started = true;
+    } else {
+      ctx.lineTo(x, yOf(b.trend));
+    }
+  });
+  if (started) ctx.stroke();
+
   bars.forEach((b, i) => {
     const x = padL + i * xStep + xStep / 2;
     const up = b.close >= b.open;
@@ -300,19 +365,22 @@ function drawChart(bars, drawn) {
       ctx.lineTo(x + 5, yOf(e.high) - 24);
       ctx.fill();
     }
+    const markY = e.signal === 1 ? yOf(e.low) + 34 : yOf(e.high) - 34;
     if (e.success === true) {
-      ctx.fillStyle = "#5ce1e6";
-      ctx.fillText("✓", x - 4, e.signal === 1 ? yOf(e.low) + 36 : yOf(e.high) - 28);
+      ctx.fillStyle = "#00ffd2";
+      ctx.beginPath();
+      ctx.arc(x, markY, 6, 0, Math.PI * 2);
+      ctx.fill();
     } else if (e.success === false) {
-      ctx.fillStyle = "#ffb020";
-      ctx.fillText("×", x - 3, e.signal === 1 ? yOf(e.low) + 36 : yOf(e.high) - 28);
+      ctx.fillStyle = "#ff4614";
+      ctx.fillRect(x - 6, markY - 6, 12, 12);
     }
   });
 
   ctx.fillStyle = "#93a0c2";
   ctx.font = "11px sans-serif";
   ctx.textAlign = "left";
-  ctx.fillText("سبز = BUY ترکیبی   قرمز = SELL ترکیبی   آبی = موفق   نارنجی = شکست   کندل آخر = در حال تشکیل", padL, h - 8);
+  ctx.fillText("سبز=BUY  قرمز=SELL  دایره توپر فیروزه‌ای=موفق  مربع توپر نارنجی=شکست  خط آبی=روند", padL, h - 8);
 }
 
 function runActive() {
@@ -502,6 +570,27 @@ function runBrowserTests() {
     };
     assert(isAllowedTime(sat, cfg) === true, "current MQL skips day filter when time filter is off");
   });
+  add("اسلات تکی وقتی دومی خاموش است", () => {
+    const s = getCombinedSignal(
+      { i1Buy: 1, i1Sell: EMPTY_VALUE, i2Buy: EMPTY_VALUE, i2Sell: EMPTY_VALUE },
+      { ignoreZero: true, useIndicator1: true, useIndicator2: false }
+    );
+    assert(s === 1, "single slot BUY");
+  });
+  add("خط روند خرید زیر خط را حذف کند", () => {
+    const s = getFinalSignal(
+      { i1Buy: 1, i1Sell: EMPTY_VALUE, i2Buy: 1, i2Sell: EMPTY_VALUE, close: 90, open: 90, high: 91, low: 89, trend: 100 },
+      { ignoreZero: true, useTrend: true, trendCompare: "close", buyAboveSellBelow: true }
+    );
+    assert(s === 0, "buy below trend must be filtered");
+  });
+  add("خط روند خرید بالای خط را نگه دارد", () => {
+    const s = getFinalSignal(
+      { i1Buy: 1, i1Sell: EMPTY_VALUE, i2Buy: 1, i2Sell: EMPTY_VALUE, close: 110, open: 110, high: 111, low: 109, trend: 100 },
+      { ignoreZero: true, useTrend: true, trendCompare: "close", buyAboveSellBelow: true }
+    );
+    assert(s === 1, "buy above trend must pass");
+  });
 
   const box = document.getElementById("testList");
   box.innerHTML = tests
@@ -541,7 +630,7 @@ function init() {
   });
 
   document.getElementById("runBtn").addEventListener("click", runActive);
-  ["barsForward", "ignoreZero", "useTimeFilter", "startTime", "endTime"].forEach((id) => {
+  ["barsForward", "ignoreZero", "useTimeFilter", "startTime", "endTime", "useInd1", "useInd2", "useTrend", "trendCompare"].forEach((id) => {
     document.getElementById(id).addEventListener("change", runActive);
   });
   dayBox.addEventListener("change", runActive);

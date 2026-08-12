@@ -1,4 +1,4 @@
-# Strategy Combiner v1 (MQL5 Custom Indicator)
+# Strategy Combiner v1.1 (MQL5 Custom Indicator)
 
 **StrategyCombiner_v1.mq5** is a custom MetaTrader 5 indicator that combines signals from **2 arbitrary Custom Indicators** using **AND** logic, applies **Day-of-Week & Time-of-Day filtering**, and calculates historical **N-Bar outcome statistics (Success/Failure)** directly on the chart.
 
@@ -32,6 +32,13 @@
 
 5. **بهینه‌سازی حداکثری عملکرد (`Bulk Buffer Copying`):**
    - به‌جای فراخوانی تکراری `CopyBuffer` برای هر کندل درون حلقه (که در داده‌های تاریخی باعث کندی شدید می‌شود)، کل بافر اندیکاتورها یک‌بار در ابتدای `OnCalculate` کپی می‌شود تا محاسبات در کسری از میلی‌ثانیه انجام شود.
+
+6. **نسخه ۱.۱ — کلید فعال/غیرفعال + تأیید روند:**
+   - `UseIndicator1` / `UseIndicator2` / `UseTrendIndicator` برای هر سه منبع.
+   - اگر فقط یک اسلات سفارشی روشن باشد، سیگنال تکی همان اسلات صادر می‌شود؛ اگر هر دو روشن باشند منطق AND است.
+   - خط روند **فقط فیلتر تأیید** است: خرید وقتی مقدار مقایسه‌شده بالای خط باشد، فروش وقتی زیر خط باشد. موفق/شکست همچنان قانون N کندل بعد است.
+   - مقایسه با `Close` / `Open` / `High` / `Low` کندل اصلی یا مقدار بافر سیگنال قابل انتخاب است.
+   - علائم Success/Failure توپر و پررنگ شدند: دایره فیروزه‌ای (Wingdings 159) و مربع نارنجی (Wingdings 164).
 
 ---
 

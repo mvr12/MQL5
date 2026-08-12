@@ -13,10 +13,13 @@ from datetime import datetime, timedelta
 
 from strategy_combiner_logic import (
     EMPTY_VALUE,
+    TREND_CMP_HIGH,
+    TREND_CMP_SIGNAL,
     Bar,
     CombinerConfig,
     collect_drawn_signals,
     get_combined_signal,
+    get_final_signal,
     is_allowed_day,
     is_allowed_time,
     is_signal_value,
@@ -33,6 +36,7 @@ def bar(
     i2_sell=EMPTY_VALUE,
     high=None,
     low=None,
+    trend=EMPTY_VALUE,
 ) -> Bar:
     return Bar(
         time=t,
@@ -44,6 +48,7 @@ def bar(
         i1_sell=i1_sell,
         i2_buy=i2_buy,
         i2_sell=i2_sell,
+        trend=trend,
     )
 
 
@@ -327,9 +332,75 @@ class RequirementCoverageTests(unittest.TestCase):
 
         src = Path(__file__).resolve().parents[1] / "Indicators" / "StrategyCombiner_v1.mq5"
         text = src.read_text(encoding="utf-8")
-        self.assertIn("futureClose > signalClose", text)
-        self.assertIn("futureClose < signalClose", text)
+        self.assertIn("close[futureShift] > close[shift]", text)
+        self.assertIn("close[futureShift] < close[shift]", text)
         self.assertIn("input int    BarsForward      = 2", text)
+        self.assertIn("input bool   UseIndicator1", text)
+        self.assertIn("input bool   UseIndicator2", text)
+        self.assertIn("input bool               UseTrendIndicator", text)
+        self.assertIn("CONFIRM / FILTER only", text)
+        self.assertIn("PLOT_ARROW, 159", text)
+        self.assertIn("PLOT_ARROW, 164", text)
+
+
+class EnableDisableAndTrendTests(unittest.TestCase):
+    def test_single_indicator1_buy_when_indicator2_off(self):
+        cfg = CombinerConfig(use_indicator1=True, use_indicator2=False)
+        b = bar(weekday(), 100, i1_buy=1.0)
+        self.assertEqual(get_combined_signal(b, cfg), 1)
+
+    def test_single_indicator2_sell_when_indicator1_off(self):
+        cfg = CombinerConfig(use_indicator1=False, use_indicator2=True)
+        b = bar(weekday(), 100, i2_sell=1.0)
+        self.assertEqual(get_combined_signal(b, cfg), -1)
+
+    def test_both_off_gives_no_signal(self):
+        cfg = CombinerConfig(use_indicator1=False, use_indicator2=False)
+        b = bar(weekday(), 100, i1_buy=1.0, i2_buy=1.0)
+        self.assertEqual(get_combined_signal(b, cfg), 0)
+
+    def test_trend_filters_buy_below_line(self):
+        cfg = CombinerConfig(use_trend=True, trend_compare="close")
+        ok = bar(weekday(), 110, i1_buy=1.0, i2_buy=1.0, trend=100)
+        blocked = bar(weekday(), 90, i1_buy=1.0, i2_buy=1.0, trend=100)
+        self.assertEqual(get_final_signal(ok, cfg), 1)
+        self.assertEqual(get_final_signal(blocked, cfg), 0)
+
+    def test_trend_filters_sell_above_line(self):
+        cfg = CombinerConfig(use_trend=True, trend_compare="close")
+        ok = bar(weekday(), 90, i1_sell=1.0, i2_sell=1.0, trend=100)
+        blocked = bar(weekday(), 110, i1_sell=1.0, i2_sell=1.0, trend=100)
+        self.assertEqual(get_final_signal(ok, cfg), -1)
+        self.assertEqual(get_final_signal(blocked, cfg), 0)
+
+    def test_trend_off_does_not_block(self):
+        cfg = CombinerConfig(use_trend=False)
+        b = bar(weekday(), 90, i1_buy=1.0, i2_buy=1.0, trend=100)
+        self.assertEqual(get_final_signal(b, cfg), 1)
+
+    def test_outcome_still_n_bar_after_trend_confirm(self):
+        cfg = CombinerConfig(use_trend=True, bars_forward=2)
+        bars = [bar(datetime(2026, 8, 3, i, 0), 100.0, trend=95.0) for i in range(20)]
+        bars[10] = bar(bars[10].time, 100.0, i1_buy=1.0, i2_buy=1.0, trend=95.0)
+        bars[12] = bar(bars[12].time, 101.0, trend=95.0)
+        bars[6] = bar(bars[6].time, 80.0, i1_buy=1.0, i2_buy=1.0, trend=95.0)
+        bars[8] = bar(bars[8].time, 120.0, trend=95.0)
+        stats = run_combiner(bars, cfg)
+        self.assertEqual(stats.filtered_by_trend, 1)
+        self.assertEqual(stats.total, 1)
+        self.assertEqual(stats.successful, 1)
+
+    def test_compare_high_vs_trend(self):
+        cfg = CombinerConfig(use_trend=True, trend_compare=TREND_CMP_HIGH)
+        b = bar(weekday(), 99, i1_buy=1.0, i2_buy=1.0, high=105, low=98, trend=100)
+        self.assertEqual(get_final_signal(b, cfg), 1)
+
+    def test_compare_signal_value(self):
+        cfg = CombinerConfig(use_trend=True, trend_compare=TREND_CMP_SIGNAL)
+        b = bar(weekday(), 90, i1_buy=110.0, i2_buy=112.0, trend=100)
+        self.assertEqual(get_final_signal(b, cfg), 1)
+        b2 = bar(weekday(), 120, i1_buy=90.0, i2_buy=91.0, trend=100)
+        self.assertEqual(get_final_signal(b2, cfg), 0)
 
 
 if __name__ == "__main__":

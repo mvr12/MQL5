@@ -1,57 +1,95 @@
 //+------------------------------------------------------------------+
 //| StrategyCombiner_v1.mq5                                          |
-//| 2 Custom Indicators + AND Logic + N-Bar Outcome Statistics      |
+//| 2 Custom Slots + Trend Confirmation + N-Bar Outcome              |
 //+------------------------------------------------------------------+
 #property strict
 #property indicator_chart_window
-#property indicator_plots   4
-#property indicator_buffers 4
+#property indicator_plots   5
+#property indicator_buffers 5
 
-#property indicator_label1  "Combined BUY"
+#property indicator_label1  "BUY"
 #property indicator_type1   DRAW_ARROW
 #property indicator_color1  clrLime
-#property indicator_width1  2
+#property indicator_width1  3
 
-#property indicator_label2  "Combined SELL"
+#property indicator_label2  "SELL"
 #property indicator_type2   DRAW_ARROW
 #property indicator_color2  clrRed
-#property indicator_width2  2
+#property indicator_width2  3
 
 #property indicator_label3  "Success"
 #property indicator_type3   DRAW_ARROW
-#property indicator_color3  clrAqua
-#property indicator_width3  1
+#property indicator_color3  C'0,255,210'
+#property indicator_width3  5
 
 #property indicator_label4  "Failure"
 #property indicator_type4   DRAW_ARROW
-#property indicator_color4  clrOrange
-#property indicator_width4  1
+#property indicator_color4  C'255,70,20'
+#property indicator_width4  5
+
+#property indicator_label5  "Trend Line"
+#property indicator_type5   DRAW_LINE
+#property indicator_color5  clrDodgerBlue
+#property indicator_style5  STYLE_SOLID
+#property indicator_width5  2
 
 
 //==================================================================
-//  INDICATOR 1 INPUTS
+//  ENUMS
+//==================================================================
+enum ENUM_TREND_COMPARE
+{
+   TREND_CMP_CLOSE  = 0,  // Close کندل اصلی
+   TREND_CMP_OPEN   = 1,  // Open کندل اصلی
+   TREND_CMP_HIGH   = 2,  // High کندل اصلی
+   TREND_CMP_LOW    = 3,  // Low کندل اصلی
+   TREND_CMP_SIGNAL = 4   // مقدار بافر سیگنال (میانگین منابع فعال)
+};
+
+enum ENUM_TREND_SIDE
+{
+   TREND_BUY_ABOVE_SELL_BELOW = 0, // خرید بالای خط / فروش زیر خط
+   TREND_BUY_BELOW_SELL_ABOVE = 1  // برعکس
+};
+
+
+//==================================================================
+//  INDICATOR 1
 //==================================================================
 input group "=== Custom Indicator 1 ==="
+input bool   UseIndicator1         = true;
 input string Indicator1_Name       = "Market\\Dark Bands MT5";
 input int    Indicator1_BuyBuffer  = 0;
 input int    Indicator1_SellBuffer = 1;
 
 
 //==================================================================
-//  INDICATOR 2 INPUTS
+//  INDICATOR 2
 //==================================================================
 input group "=== Custom Indicator 2 ==="
+input bool   UseIndicator2         = true;
 input string Indicator2_Name       = "MySecondIndicator";
 input int    Indicator2_BuyBuffer  = 0;
 input int    Indicator2_SellBuffer = 1;
 
 
 //==================================================================
-//  COMBINED SIGNAL SETTINGS
+//  TREND CONFIRMATION (FILTER ONLY — NOT OUTCOME)
+//==================================================================
+input group "=== Trend Confirmation ==="
+input bool               UseTrendIndicator     = true;
+input string             TrendIndicator_Name   = "Examples\\Custom Moving Average";
+input int                TrendIndicator_Buffer = 0;
+input ENUM_TREND_COMPARE TrendCompareWith      = TREND_CMP_CLOSE;
+input ENUM_TREND_SIDE    TrendSideRule         = TREND_BUY_ABOVE_SELL_BELOW;
+
+
+//==================================================================
+//  COMBINED SIGNAL / OUTCOME
 //==================================================================
 input group "=== Combined Signal ==="
-input int    BarsForward      = 2;     // تعداد کندل‌های بعد برای بررسی موفقیت/شکست
-input bool   IgnoreZeroValues = true;  // اگر true باشد مقدار صفر سیگنال محسوب نمی‌شود
+input int    BarsForward      = 2;     // N کندل بعد برای موفق/شکست
+input bool   IgnoreZeroValues = true;  // صفر = بدون سیگنال
 
 
 //==================================================================
@@ -75,55 +113,52 @@ input int    EndMinute        = 59;
 
 
 //==================================================================
-//  DISPLAY SETTINGS
+//  DISPLAY
 //==================================================================
 input group "=== Display ==="
 input bool   ShowSignalArrows = true;
 input bool   ShowResultArrows = true;
+input bool   ShowTrendLine    = true;
 input bool   ShowStatistics   = true;
 
 
 //==================================================================
-//  HANDLES
+//  HANDLES / BUFFERS
 //==================================================================
-int Handle1 = INVALID_HANDLE;
-int Handle2 = INVALID_HANDLE;
+int Handle1    = INVALID_HANDLE;
+int Handle2    = INVALID_HANDLE;
+int HandleTrend = INVALID_HANDLE;
 
-
-//==================================================================
-//  OUTPUT BUFFERS
-//==================================================================
 double BuySignalBuffer[];
 double SellSignalBuffer[];
 double SuccessBuffer[];
 double FailureBuffer[];
+double TrendLineBuffer[];
 
-
-//==================================================================
-//  DYNAMIC ARRAYS FOR OPTIMIZED BULK BUFFER COPYING
-//==================================================================
 double Buffer1_Buy[];
 double Buffer1_Sell[];
 double Buffer2_Buy[];
 double Buffer2_Sell[];
+double BufferTrend[];
+
+int CopiedTrend = 0;
 
 
 //==================================================================
-//  STATISTICS VARIABLES
+//  STATISTICS
 //==================================================================
 int TotalSignals       = 0;
 int SuccessfulSignals  = 0;
 int FailedSignals      = 0;
-
 int CurrentWinStreak   = 0;
 int CurrentLossStreak  = 0;
-
 int MaxWinStreak       = 0;
 int MaxLossStreak      = 0;
+int FilteredByTrend    = 0;
 
 
 //==================================================================
-//  CHECK ALLOWED DAY OF WEEK
+//  DAY / TIME
 //==================================================================
 bool IsAllowedDay(const datetime t)
 {
@@ -140,14 +175,9 @@ bool IsAllowedDay(const datetime t)
       case 5: return Friday;
       case 6: return Saturday;
    }
-
    return false;
 }
 
-
-//==================================================================
-//  CHECK ALLOWED TIME RANGE
-//==================================================================
 bool IsAllowedTime(const datetime t)
 {
    if(!UseTimeFilter)
@@ -163,82 +193,198 @@ bool IsAllowedTime(const datetime t)
    int startMinutes   = StartHour * 60 + StartMinute;
    int endMinutes     = EndHour * 60 + EndMinute;
 
-   // بازه زمانی معمولی در طول یک روز
    if(startMinutes <= endMinutes)
-   {
       return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
-   }
 
-   // بازه عبوری از نیمه‌شب (مثلاً 22:00 تا 02:00)
    return (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
 }
 
 
 //==================================================================
-//  CHECK SIGNAL BUFFER VALUE VALIDITY
+//  VALUE CHECKS
 //==================================================================
 bool IsSignalValue(const double value)
 {
    if(value == EMPTY_VALUE || value == DBL_MAX)
       return false;
-
    if(!MathIsValidNumber(value))
       return false;
-
    if(IgnoreZeroValues && value == 0.0)
       return false;
+   return true;
+}
 
+bool IsValidTrendValue(const double value)
+{
+   if(value == EMPTY_VALUE || value == DBL_MAX)
+      return false;
+   if(!MathIsValidNumber(value))
+      return false;
    return true;
 }
 
 
 //==================================================================
-//  GET COMBINED SIGNAL (OPTIMIZED USING COPIED BUFFERS)
-//
-//  1  = BUY  (هر دو اندیکاتور سیگنال خرید می‌دهند)
-// -1  = SELL (هر دو اندیکاتور سیگنال فروش می‌دهند)
-//  0  = NONE / INVALID
+//  SOURCE SIGNAL FROM ENABLED CUSTOM SLOTS
+//  - هر دو روشن: AND
+//  - فقط یکی روشن: سیگنال تکی همان اسلات
 //==================================================================
-int GetCombinedSignal(const int shift, const int max_copied)
+int GetSourceSignal(const int shift, const int max_copied)
 {
    if(shift < 0 || shift >= max_copied)
       return 0;
 
-   double i1Buy  = Buffer1_Buy[shift];
-   double i1Sell = Buffer1_Sell[shift];
-   double i2Buy  = Buffer2_Buy[shift];
-   double i2Sell = Buffer2_Sell[shift];
+   if(!UseIndicator1 && !UseIndicator2)
+      return 0;
 
-   bool ind1Buy  = IsSignalValue(i1Buy);
-   bool ind1Sell = IsSignalValue(i1Sell);
-   bool ind2Buy  = IsSignalValue(i2Buy);
-   bool ind2Sell = IsSignalValue(i2Sell);
+   bool wantBuy  = true;
+   bool wantSell = true;
 
-   //===============================================================
-   // AND Logic: BUY
-   //===============================================================
-   if(ind1Buy && ind2Buy && !ind1Sell && !ind2Sell)
+   if(UseIndicator1)
+   {
+      bool i1Buy  = IsSignalValue(Buffer1_Buy[shift]);
+      bool i1Sell = IsSignalValue(Buffer1_Sell[shift]);
+      if(!i1Buy)  wantBuy  = false;
+      if(!i1Sell) wantSell = false;
+   }
+
+   if(UseIndicator2)
+   {
+      bool i2Buy  = IsSignalValue(Buffer2_Buy[shift]);
+      bool i2Sell = IsSignalValue(Buffer2_Sell[shift]);
+      if(!i2Buy)  wantBuy  = false;
+      if(!i2Sell) wantSell = false;
+   }
+
+   if(wantBuy && !wantSell)
       return 1;
-
-   //===============================================================
-   // AND Logic: SELL
-   //===============================================================
-   if(ind1Sell && ind2Sell && !ind1Buy && !ind2Buy)
+   if(wantSell && !wantBuy)
       return -1;
-
-   // Fallback در صورتی که بافرهای خرید و فروش هم‌پوشانی داشته باشند
-   if(ind1Buy && ind2Buy)
+   if(wantBuy)
       return 1;
-
-   if(ind1Sell && ind2Sell)
+   if(wantSell)
       return -1;
-
    return 0;
 }
 
 
 //==================================================================
-//  REGISTER RESULT IN STATISTICS
+//  COMPARE PRICE VS TREND LINE
+//==================================================================
+double GetCompareValue(
+   const int shift,
+   const int signal,
+   const double &open[],
+   const double &high[],
+   const double &low[],
+   const double &close[]
+)
+{
+   if(TrendCompareWith == TREND_CMP_OPEN)
+      return open[shift];
+   if(TrendCompareWith == TREND_CMP_HIGH)
+      return high[shift];
+   if(TrendCompareWith == TREND_CMP_LOW)
+      return low[shift];
+
+   if(TrendCompareWith == TREND_CMP_SIGNAL)
+   {
+      double sum = 0.0;
+      int    n   = 0;
+
+      if(signal == 1)
+      {
+         if(UseIndicator1 && IsSignalValue(Buffer1_Buy[shift]))
+         {
+            sum += Buffer1_Buy[shift];
+            n++;
+         }
+         if(UseIndicator2 && IsSignalValue(Buffer2_Buy[shift]))
+         {
+            sum += Buffer2_Buy[shift];
+            n++;
+         }
+      }
+      else if(signal == -1)
+      {
+         if(UseIndicator1 && IsSignalValue(Buffer1_Sell[shift]))
+         {
+            sum += Buffer1_Sell[shift];
+            n++;
+         }
+         if(UseIndicator2 && IsSignalValue(Buffer2_Sell[shift]))
+         {
+            sum += Buffer2_Sell[shift];
+            n++;
+         }
+      }
+
+      if(n > 0)
+         return sum / n;
+   }
+
+   return close[shift];
+}
+
+bool IsTrendConfirmed(
+   const int signal,
+   const int shift,
+   const double &open[],
+   const double &high[],
+   const double &low[],
+   const double &close[]
+)
+{
+   if(!UseTrendIndicator)
+      return true;
+
+   if(shift < 0 || shift >= CopiedTrend)
+      return false;
+
+   double trend = BufferTrend[shift];
+   if(!IsValidTrendValue(trend))
+      return false;
+
+   double ref = GetCompareValue(shift, signal, open, high, low, close);
+
+   bool above = (ref > trend);
+   bool below = (ref < trend);
+
+   if(TrendSideRule == TREND_BUY_ABOVE_SELL_BELOW)
+   {
+      if(signal == 1)  return above;
+      if(signal == -1) return below;
+   }
+   else
+   {
+      if(signal == 1)  return below;
+      if(signal == -1) return above;
+   }
+   return false;
+}
+
+int GetFinalSignal(
+   const int shift,
+   const int max_copied,
+   const double &open[],
+   const double &high[],
+   const double &low[],
+   const double &close[]
+)
+{
+   int signal = GetSourceSignal(shift, max_copied);
+   if(signal == 0)
+      return 0;
+
+   if(!IsTrendConfirmed(signal, shift, open, high, low, close))
+      return 0;
+
+   return signal;
+}
+
+
+//==================================================================
+//  STATISTICS HELPERS
 //==================================================================
 void RegisterResult(const bool success)
 {
@@ -247,32 +393,27 @@ void RegisterResult(const bool success)
    if(success)
    {
       SuccessfulSignals++;
-
       CurrentWinStreak++;
       CurrentLossStreak = 0;
-
       if(CurrentWinStreak > MaxWinStreak)
          MaxWinStreak = CurrentWinStreak;
    }
    else
    {
       FailedSignals++;
-
       CurrentLossStreak++;
       CurrentWinStreak = 0;
-
       if(CurrentLossStreak > MaxLossStreak)
          MaxLossStreak = CurrentLossStreak;
    }
 }
 
-
-//==================================================================
-//  CALCULATE HISTORICAL STATISTICS OVER N-BAR OUTCOME
-//==================================================================
 void CalculateStatistics(
    const int rates_total,
    const datetime &time[],
+   const double &open[],
+   const double &high[],
+   const double &low[],
    const double &close[],
    const int max_copied
 )
@@ -280,68 +421,39 @@ void CalculateStatistics(
    TotalSignals      = 0;
    SuccessfulSignals = 0;
    FailedSignals     = 0;
-
    CurrentWinStreak  = 0;
    CurrentLossStreak = 0;
-
    MaxWinStreak      = 0;
    MaxLossStreak     = 0;
-
-   //===============================================================
-   // در MQL5 بعد از فراخوانی ArraySetAsSeries:
-   // shift 0 = کندل جاری (در حال تشکیل)
-   // shift 1 = آخرین کندل بسته شده
-   //
-   // برای سیگنال در کندل shift = S
-   // قیمت بسته شدن N کندل بعد برابر است با:
-   // futureShift = S - BarsForward
-   //
-   // بنابراین جدیدترین کندلی که نتیجه آن قطعی شده:
-   // newestAllowedShift = BarsForward + 1
-   //===============================================================
+   FilteredByTrend   = 0;
 
    int oldestShift        = MathMin(rates_total - 1, max_copied - 1);
    int newestAllowedShift = BarsForward + 1;
 
-   // از قدیمی‌ترین کندل به جدیدترین حرکت می‌کنیم تا Streak دقیق محاسبه شود
    for(int shift = oldestShift; shift >= newestAllowedShift; shift--)
    {
-      datetime signalTime = time[shift];
-
-      if(!IsAllowedTime(signalTime))
+      if(!IsAllowedTime(time[shift]))
          continue;
 
-      int signal = GetCombinedSignal(shift, max_copied);
-
-      if(signal == 0)
+      int source = GetSourceSignal(shift, max_copied);
+      if(source == 0)
          continue;
+
+      if(!IsTrendConfirmed(source, shift, open, high, low, close))
+      {
+         FilteredByTrend++;
+         continue;
+      }
 
       int futureShift = shift - BarsForward;
-
       if(futureShift < 1)
          continue;
 
-      double signalClose = close[shift];
-      double futureClose = close[futureShift];
-
       bool success = false;
-
-      //============================================================
-      // BUY: موفقیت یعنی Close در N کندل بعد بالاتر از Close سیگنال
-      //============================================================
-      if(signal == 1)
-      {
-         if(futureClose > signalClose)
-            success = true;
-      }
-      //============================================================
-      // SELL: موفقیت یعنی Close در N کندل بعد پایین‌تر از Close سیگنال
-      //============================================================
-      else if(signal == -1)
-      {
-         if(futureClose < signalClose)
-            success = true;
-      }
+      if(source == 1)
+         success = (close[futureShift] > close[shift]);
+      else if(source == -1)
+         success = (close[futureShift] < close[shift]);
 
       RegisterResult(success);
    }
@@ -349,11 +461,27 @@ void CalculateStatistics(
 
 
 //==================================================================
-//  DRAW SIGNALS AND OUTCOME ARROWS
+//  DRAW
 //==================================================================
+void DrawTrendLine(const int rates_total, const int max_copied)
+{
+   ArrayInitialize(TrendLineBuffer, EMPTY_VALUE);
+
+   if(!UseTrendIndicator || !ShowTrendLine)
+      return;
+
+   int oldest = MathMin(MathMin(rates_total - 1, max_copied - 1), CopiedTrend - 1);
+   for(int shift = oldest; shift >= 0; shift--)
+   {
+      if(IsValidTrendValue(BufferTrend[shift]))
+         TrendLineBuffer[shift] = BufferTrend[shift];
+   }
+}
+
 void DrawSignals(
    const int rates_total,
    const datetime &time[],
+   const double &open[],
    const double &high[],
    const double &low[],
    const double &close[],
@@ -365,59 +493,51 @@ void DrawSignals(
    ArrayInitialize(SuccessBuffer,    EMPTY_VALUE);
    ArrayInitialize(FailureBuffer,    EMPTY_VALUE);
 
+   DrawTrendLine(rates_total, max_copied);
+
    if(!ShowSignalArrows && !ShowResultArrows)
       return;
 
    int oldestShift        = MathMin(rates_total - 1, max_copied - 1);
-   int newestAllowedShift = 1; // نمایش فلش سیگنال برای تمام کندل‌های بسته‌شده
+   int newestAllowedShift = 1;
 
    for(int shift = oldestShift; shift >= newestAllowedShift; shift--)
    {
       if(!IsAllowedTime(time[shift]))
          continue;
 
-      int signal = GetCombinedSignal(shift, max_copied);
-
+      int signal = GetFinalSignal(shift, max_copied, open, high, low, close);
       if(signal == 0)
          continue;
 
       int futureShift = shift - BarsForward;
 
-      //============================================================
-      // BUY SIGNAL & RESULT
-      //============================================================
       if(signal == 1)
       {
          if(ShowSignalArrows)
-            BuySignalBuffer[shift] = low[shift] - 10 * _Point;
+            BuySignalBuffer[shift] = low[shift] - 12 * _Point;
 
-         // نمایش نتیجه موفقیت/شکست روی کندل سیگنال (فقط اگر کندل آینده بسته شده باشد)
          if(ShowResultArrows && futureShift >= 1)
          {
             bool success = (close[futureShift] > close[shift]);
-
             if(success)
-               SuccessBuffer[shift] = low[shift] - 25 * _Point;
+               SuccessBuffer[shift] = low[shift] - 38 * _Point;
             else
-               FailureBuffer[shift] = low[shift] - 25 * _Point;
+               FailureBuffer[shift] = low[shift] - 38 * _Point;
          }
       }
-      //============================================================
-      // SELL SIGNAL & RESULT
-      //============================================================
       else if(signal == -1)
       {
          if(ShowSignalArrows)
-            SellSignalBuffer[shift] = high[shift] + 10 * _Point;
+            SellSignalBuffer[shift] = high[shift] + 12 * _Point;
 
          if(ShowResultArrows && futureShift >= 1)
          {
             bool success = (close[futureShift] < close[shift]);
-
             if(success)
-               SuccessBuffer[shift] = high[shift] + 25 * _Point;
+               SuccessBuffer[shift] = high[shift] + 38 * _Point;
             else
-               FailureBuffer[shift] = high[shift] + 25 * _Point;
+               FailureBuffer[shift] = high[shift] + 38 * _Point;
          }
       }
    }
@@ -425,8 +545,22 @@ void DrawSignals(
 
 
 //==================================================================
-//  STATISTICS PANEL DISPLAY
+//  PANEL
 //==================================================================
+string SlotState(const bool enabled)
+{
+   return enabled ? "ON" : "OFF";
+}
+
+string CompareModeText()
+{
+   if(TrendCompareWith == TREND_CMP_OPEN)   return "OPEN";
+   if(TrendCompareWith == TREND_CMP_HIGH)   return "HIGH";
+   if(TrendCompareWith == TREND_CMP_LOW)    return "LOW";
+   if(TrendCompareWith == TREND_CMP_SIGNAL) return "SIGNAL VALUE";
+   return "CLOSE";
+}
+
 void ShowStats()
 {
    if(!ShowStatistics)
@@ -437,9 +571,7 @@ void ShowStats()
 
    double successRate = 0.0;
    if(TotalSignals > 0)
-   {
       successRate = 100.0 * (double)SuccessfulSignals / (double)TotalSignals;
-   }
 
    string currentStreakText = "0";
    if(CurrentWinStreak > 0)
@@ -454,25 +586,31 @@ void ShowStats()
                                       StartHour, StartMinute, EndHour, EndMinute);
    }
 
+   string logicText = "NONE";
+   if(UseIndicator1 && UseIndicator2)
+      logicText = "AND (both customs)";
+   else if(UseIndicator1)
+      logicText = "SINGLE (Indicator 1)";
+   else if(UseIndicator2)
+      logicText = "SINGLE (Indicator 2)";
+
    string text =
       "========================================\n" +
-      "   STRATEGY COMBINER v1 (Custom Ind.)\n" +
+      "   STRATEGY COMBINER v1.1\n" +
       "========================================\n" +
-      "Indicator 1 : " + Indicator1_Name + "\n" +
-      "BUY Buffer  : " + IntegerToString(Indicator1_BuyBuffer) +
-      " | SELL Buffer: " + IntegerToString(Indicator1_SellBuffer) + "\n\n" +
-
-      "Indicator 2 : " + Indicator2_Name + "\n" +
-      "BUY Buffer  : " + IntegerToString(Indicator2_BuyBuffer) +
-      " | SELL Buffer: " + IntegerToString(Indicator2_SellBuffer) + "\n\n" +
-
-      "Logic Mode  : AND\n" +
-      "Outcome Bars: " + IntegerToString(BarsForward) + " (N-Bar Close)\n" +
+      "Ind 1 [" + SlotState(UseIndicator1) + "] : " + Indicator1_Name + "\n" +
+      "Ind 2 [" + SlotState(UseIndicator2) + "] : " + Indicator2_Name + "\n" +
+      "Trend [" + SlotState(UseTrendIndicator) + "] : " + TrendIndicator_Name + "\n" +
+      "Trend role  : CONFIRM / FILTER only\n" +
+      "Compare     : " + CompareModeText() + " vs trend line\n" +
+      "Logic       : " + logicText + "\n" +
+      "Outcome     : N-Bar Close (" + IntegerToString(BarsForward) + ")\n" +
       "Time Filter : " + timeFilterStatus + "\n" +
       "----------------------------------------\n" +
       "TOTAL SIGNALS       : " + IntegerToString(TotalSignals) + "\n" +
       "SUCCESSFUL SIGNALS  : " + IntegerToString(SuccessfulSignals) + "\n" +
       "FAILED SIGNALS      : " + IntegerToString(FailedSignals) + "\n" +
+      "FILTERED BY TREND   : " + IntegerToString(FilteredByTrend) + "\n" +
       "SUCCESS RATE        : " + DoubleToString(successRate, 2) + "%\n" +
       "----------------------------------------\n" +
       "MAX SUCCESS STREAK  : " + IntegerToString(MaxWinStreak) + "\n" +
@@ -485,70 +623,84 @@ void ShowStats()
 
 
 //==================================================================
-//  INIT
+//  INIT / DEINIT
 //==================================================================
 int OnInit()
 {
-   //===============================================================
-   // Create Indicator 1 Handle
-   //===============================================================
-   Handle1 = iCustom(_Symbol, _Period, Indicator1_Name);
-   if(Handle1 == INVALID_HANDLE)
+   if(!UseIndicator1 && !UseIndicator2)
    {
-      Print("ERROR: Cannot load Indicator 1: ", Indicator1_Name, " | Error code: ", GetLastError());
+      Print("ERROR: Enable at least one custom indicator slot.");
       return INIT_FAILED;
    }
 
-   //===============================================================
-   // Create Indicator 2 Handle
-   //===============================================================
-   Handle2 = iCustom(_Symbol, _Period, Indicator2_Name);
-   if(Handle2 == INVALID_HANDLE)
+   if(UseIndicator1)
    {
-      Print("ERROR: Cannot load Indicator 2: ", Indicator2_Name, " | Error code: ", GetLastError());
-      return INIT_FAILED;
+      Handle1 = iCustom(_Symbol, _Period, Indicator1_Name);
+      if(Handle1 == INVALID_HANDLE)
+      {
+         Print("ERROR: Cannot load Indicator 1: ", Indicator1_Name, " | Error code: ", GetLastError());
+         return INIT_FAILED;
+      }
    }
 
-   //===============================================================
-   // Bind output indicator buffers
-   //===============================================================
+   if(UseIndicator2)
+   {
+      Handle2 = iCustom(_Symbol, _Period, Indicator2_Name);
+      if(Handle2 == INVALID_HANDLE)
+      {
+         Print("ERROR: Cannot load Indicator 2: ", Indicator2_Name, " | Error code: ", GetLastError());
+         return INIT_FAILED;
+      }
+   }
+
+   if(UseTrendIndicator)
+   {
+      HandleTrend = iCustom(_Symbol, _Period, TrendIndicator_Name);
+      if(HandleTrend == INVALID_HANDLE)
+      {
+         Print("ERROR: Cannot load Trend Indicator: ", TrendIndicator_Name, " | Error code: ", GetLastError());
+         return INIT_FAILED;
+      }
+   }
+
    SetIndexBuffer(0, BuySignalBuffer,  INDICATOR_DATA);
    SetIndexBuffer(1, SellSignalBuffer, INDICATOR_DATA);
    SetIndexBuffer(2, SuccessBuffer,    INDICATOR_DATA);
    SetIndexBuffer(3, FailureBuffer,    INDICATOR_DATA);
+   SetIndexBuffer(4, TrendLineBuffer,  INDICATOR_DATA);
 
    ArraySetAsSeries(BuySignalBuffer,  true);
    ArraySetAsSeries(SellSignalBuffer, true);
    ArraySetAsSeries(SuccessBuffer,    true);
    ArraySetAsSeries(FailureBuffer,    true);
+   ArraySetAsSeries(TrendLineBuffer,  true);
 
-   PlotIndexSetInteger(0, PLOT_ARROW, 233); // Up Arrow
-   PlotIndexSetInteger(1, PLOT_ARROW, 234); // Down Arrow
-   PlotIndexSetInteger(2, PLOT_ARROW, 241); // Checkmark (Success)
-   PlotIndexSetInteger(3, PLOT_ARROW, 242); // Cross (Failure)
+   PlotIndexSetInteger(0, PLOT_ARROW, 233); // hollow-ish up arrow (signal)
+   PlotIndexSetInteger(1, PLOT_ARROW, 234); // hollow-ish down arrow (signal)
+   PlotIndexSetInteger(2, PLOT_ARROW, 159); // filled circle  — SUCCESS
+   PlotIndexSetInteger(3, PLOT_ARROW, 164); // filled square  — FAILURE
+
+   PlotIndexSetInteger(2, PLOT_LINE_WIDTH, 5);
+   PlotIndexSetInteger(3, PLOT_LINE_WIDTH, 5);
 
    PlotIndexSetDouble(0, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(1, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(2, PLOT_EMPTY_VALUE, EMPTY_VALUE);
    PlotIndexSetDouble(3, PLOT_EMPTY_VALUE, EMPTY_VALUE);
+   PlotIndexSetDouble(4, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
-   IndicatorSetString(INDICATOR_SHORTNAME, "Strategy Combiner v1");
-
+   IndicatorSetString(INDICATOR_SHORTNAME, "Strategy Combiner v1.1");
    return INIT_SUCCEEDED;
 }
 
-
-//==================================================================
-//  DEINIT
-//==================================================================
 void OnDeinit(const int reason)
 {
    if(Handle1 != INVALID_HANDLE)
       IndicatorRelease(Handle1);
-
    if(Handle2 != INVALID_HANDLE)
       IndicatorRelease(Handle2);
-
+   if(HandleTrend != INVALID_HANDLE)
+      IndicatorRelease(HandleTrend);
    Comment("");
 }
 
@@ -572,51 +724,70 @@ int OnCalculate(
    if(rates_total < BarsForward + 10)
       return 0;
 
-   //===============================================================
-   // تنظیم آرایه‌های قیمت به صورت سری زمانی (shift 0 = کندل جاری)
-   //===============================================================
    ArraySetAsSeries(time,  true);
    ArraySetAsSeries(open,  true);
    ArraySetAsSeries(high,  true);
    ArraySetAsSeries(low,   true);
    ArraySetAsSeries(close, true);
 
-   // بررسی آماده بودن داده‌های اندیکاتورهای خارجی
-   int barsReady1 = BarsCalculated(Handle1);
-   int barsReady2 = BarsCalculated(Handle2);
-
-   if(barsReady1 <= BarsForward || barsReady2 <= BarsForward)
+   if(UseIndicator1 && BarsCalculated(Handle1) <= BarsForward)
+      return prev_calculated;
+   if(UseIndicator2 && BarsCalculated(Handle2) <= BarsForward)
+      return prev_calculated;
+   if(UseTrendIndicator && BarsCalculated(HandleTrend) <= BarsForward)
       return prev_calculated;
 
-   //===============================================================
-   // کپی کلی بافرها برای بالاترین راندمان محاسباتی (بدون کپی تک‌به‌تک در حلقه)
-   //===============================================================
    ArraySetAsSeries(Buffer1_Buy,  true);
    ArraySetAsSeries(Buffer1_Sell, true);
    ArraySetAsSeries(Buffer2_Buy,  true);
    ArraySetAsSeries(Buffer2_Sell, true);
+   ArraySetAsSeries(BufferTrend,  true);
 
-   int copied1_buy  = CopyBuffer(Handle1, Indicator1_BuyBuffer,  0, rates_total, Buffer1_Buy);
-   int copied1_sell = CopyBuffer(Handle1, Indicator1_SellBuffer, 0, rates_total, Buffer1_Sell);
-   int copied2_buy  = CopyBuffer(Handle2, Indicator2_BuyBuffer,  0, rates_total, Buffer2_Buy);
-   int copied2_sell = CopyBuffer(Handle2, Indicator2_SellBuffer, 0, rates_total, Buffer2_Sell);
+   int max_copied = rates_total;
 
-   if(copied1_buy <= BarsForward || copied1_sell <= BarsForward ||
-      copied2_buy <= BarsForward || copied2_sell <= BarsForward)
+   if(UseIndicator1)
    {
-      return prev_calculated;
+      int cBuy  = CopyBuffer(Handle1, Indicator1_BuyBuffer,  0, rates_total, Buffer1_Buy);
+      int cSell = CopyBuffer(Handle1, Indicator1_SellBuffer, 0, rates_total, Buffer1_Sell);
+      if(cBuy <= BarsForward || cSell <= BarsForward)
+         return prev_calculated;
+      max_copied = MathMin(max_copied, MathMin(cBuy, cSell));
+   }
+   else
+   {
+      ArrayResize(Buffer1_Buy,  rates_total);
+      ArrayResize(Buffer1_Sell, rates_total);
+      ArrayInitialize(Buffer1_Buy,  EMPTY_VALUE);
+      ArrayInitialize(Buffer1_Sell, EMPTY_VALUE);
    }
 
-   int max_copied = MathMin(MathMin(copied1_buy, copied1_sell), MathMin(copied2_buy, copied2_sell));
-   max_copied     = MathMin(max_copied, rates_total);
+   if(UseIndicator2)
+   {
+      int cBuy  = CopyBuffer(Handle2, Indicator2_BuyBuffer,  0, rates_total, Buffer2_Buy);
+      int cSell = CopyBuffer(Handle2, Indicator2_SellBuffer, 0, rates_total, Buffer2_Sell);
+      if(cBuy <= BarsForward || cSell <= BarsForward)
+         return prev_calculated;
+      max_copied = MathMin(max_copied, MathMin(cBuy, cSell));
+   }
+   else
+   {
+      ArrayResize(Buffer2_Buy,  rates_total);
+      ArrayResize(Buffer2_Sell, rates_total);
+      ArrayInitialize(Buffer2_Buy,  EMPTY_VALUE);
+      ArrayInitialize(Buffer2_Sell, EMPTY_VALUE);
+   }
 
-   // محاسبه آمار موفقیت و شکست بر اساس N کندل بعد
-   CalculateStatistics(rates_total, time, close, max_copied);
+   CopiedTrend = 0;
+   if(UseTrendIndicator)
+   {
+      CopiedTrend = CopyBuffer(HandleTrend, TrendIndicator_Buffer, 0, rates_total, BufferTrend);
+      if(CopiedTrend <= BarsForward)
+         return prev_calculated;
+      max_copied = MathMin(max_copied, CopiedTrend);
+   }
 
-   // رسم فلش‌های خرید/فروش و علائم موفقیت/شکست
-   DrawSignals(rates_total, time, high, low, close, max_copied);
-
-   // نمایش پنل آماری روی چارت
+   CalculateStatistics(rates_total, time, open, high, low, close, max_copied);
+   DrawSignals(rates_total, time, open, high, low, close, max_copied);
    ShowStats();
 
    return rates_total;
