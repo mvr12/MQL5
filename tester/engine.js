@@ -24,8 +24,8 @@ function isAllowedDay(date, cfg) {
 }
 
 function isAllowedTime(date, cfg) {
+  if (cfg.useDayFilter !== false && !isAllowedDay(date, cfg)) return false;
   if (!cfg.useTimeFilter) return true;
-  if (!isAllowedDay(date, cfg)) return false;
   const current = date.getHours() * 60 + date.getMinutes();
   const start = cfg.startHour * 60 + cfg.startMinute;
   const end = cfg.endHour * 60 + cfg.endMinute;

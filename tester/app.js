@@ -218,6 +218,7 @@ function readConfig() {
   const cfg = {
     barsForward: Number(document.getElementById("barsForward").value) || 2,
     ignoreZero: document.getElementById("ignoreZero").checked,
+    useDayFilter: document.getElementById("useDayFilter").checked,
     useTimeFilter: document.getElementById("useTimeFilter").checked,
     startHour: Number(start[0]),
     startMinute: Number(start[1]),
@@ -559,16 +560,29 @@ function runBrowserTests() {
     assert(currentStreakText(stats) === "-1 (FAILURE)", stats.currentLoss);
     assert(almost(successRate(stats), 200 / 3), "rate");
   });
-  add("UseTimeFilter=false روز را هم رد می‌کند (رفتار فعلی کد)", () => {
+  add("UseDayFilter=false شنبه را رد می‌کند", () => {
     const sat = new Date(2026, 7, 8, 3, 0, 0);
     const cfg = {
       useTimeFilter: false,
+      useDayFilter: false,
       saturday: false,
       sunday: false,
       monday: true, tuesday: true, wednesday: true, thursday: true, friday: true,
       startHour: 0, startMinute: 0, endHour: 23, endMinute: 59,
     };
-    assert(isAllowedTime(sat, cfg) === true, "current MQL skips day filter when time filter is off");
+    assert(isAllowedTime(sat, cfg) === true, "day filter off allows Saturday");
+  });
+  add("فیلتر روز مستقل از ساعت است", () => {
+    const sat = new Date(2026, 7, 8, 3, 0, 0);
+    const cfg = {
+      useTimeFilter: false,
+      useDayFilter: true,
+      saturday: false,
+      sunday: false,
+      monday: true, tuesday: true, wednesday: true, thursday: true, friday: true,
+      startHour: 0, startMinute: 0, endHour: 23, endMinute: 59,
+    };
+    assert(isAllowedTime(sat, cfg) === false, "Saturday must stay blocked when day filter is on");
   });
   add("اسلات تکی وقتی دومی خاموش است", () => {
     const s = getCombinedSignal(
@@ -630,7 +644,7 @@ function init() {
   });
 
   document.getElementById("runBtn").addEventListener("click", runActive);
-  ["barsForward", "ignoreZero", "useTimeFilter", "startTime", "endTime", "useInd1", "useInd2", "useTrend", "trendCompare"].forEach((id) => {
+  ["barsForward", "ignoreZero", "useDayFilter", "useTimeFilter", "startTime", "endTime", "useInd1", "useInd2", "useTrend", "trendCompare"].forEach((id) => {
     document.getElementById(id).addEventListener("change", runActive);
   });
   dayBox.addEventListener("change", runActive);

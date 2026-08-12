@@ -52,6 +52,12 @@ enum ENUM_TREND_SIDE
    TREND_BUY_BELOW_SELL_ABOVE = 1  // برعکس
 };
 
+enum ENUM_TREND_SOURCE
+{
+   TREND_SOURCE_MA     = 0, // Moving Average داخلی MT5 (همیشه در دسترس)
+   TREND_SOURCE_CUSTOM = 1  // اندیکاتور سفارشی روند
+};
+
 
 //==================================================================
 //  INDICATOR 1
@@ -78,6 +84,10 @@ input int    Indicator2_SellBuffer = 1;
 //==================================================================
 input group "=== Trend Confirmation ==="
 input bool               UseTrendIndicator     = true;
+input ENUM_TREND_SOURCE  TrendSource           = TREND_SOURCE_MA;
+input int                TrendMA_Period        = 50;
+input ENUM_MA_METHOD     TrendMA_Method        = MODE_EMA;
+input ENUM_APPLIED_PRICE TrendMA_AppliedPrice  = PRICE_CLOSE;
 input string             TrendIndicator_Name   = "Examples\\Custom Moving Average";
 input int                TrendIndicator_Buffer = 0;
 input ENUM_TREND_COMPARE TrendCompareWith      = TREND_CMP_CLOSE;
@@ -96,6 +106,7 @@ input bool   IgnoreZeroValues = true;  // صفر = بدون سیگنال
 //  TIME & DAY FILTER
 //==================================================================
 input group "=== Trading Days ==="
+input bool   UseDayFilter     = true;
 input bool   Monday           = true;
 input bool   Tuesday          = true;
 input bool   Wednesday        = true;
@@ -178,13 +189,17 @@ bool IsAllowedDay(const datetime t)
    return false;
 }
 
-bool IsAllowedTime(const datetime t)
+bool PassesDayFilter(const datetime t)
+{
+   if(!UseDayFilter)
+      return true;
+   return IsAllowedDay(t);
+}
+
+bool PassesHourFilter(const datetime t)
 {
    if(!UseTimeFilter)
       return true;
-
-   if(!IsAllowedDay(t))
-      return false;
 
    MqlDateTime dt;
    TimeToStruct(t, dt);
@@ -197,6 +212,11 @@ bool IsAllowedTime(const datetime t)
       return (currentMinutes >= startMinutes && currentMinutes <= endMinutes);
 
    return (currentMinutes >= startMinutes || currentMinutes <= endMinutes);
+}
+
+bool IsAllowedTime(const datetime t)
+{
+   return (PassesDayFilter(t) && PassesHourFilter(t));
 }
 
 
@@ -579,12 +599,19 @@ void ShowStats()
    else if(CurrentLossStreak > 0)
       currentStreakText = "-" + IntegerToString(CurrentLossStreak) + " (FAILURE)";
 
+   string dayFilterStatus = UseDayFilter ? "ENABLED" : "DISABLED";
    string timeFilterStatus = "DISABLED";
    if(UseTimeFilter)
    {
       timeFilterStatus = StringFormat("ENABLED (%02d:%02d - %02d:%02d)",
                                       StartHour, StartMinute, EndHour, EndMinute);
    }
+
+   string trendSourceText = "MA";
+   if(TrendSource == TREND_SOURCE_CUSTOM)
+      trendSourceText = TrendIndicator_Name;
+   else
+      trendSourceText = StringFormat("EMA/MA(%d)", TrendMA_Period);
 
    string logicText = "NONE";
    if(UseIndicator1 && UseIndicator2)
@@ -600,11 +627,12 @@ void ShowStats()
       "========================================\n" +
       "Ind 1 [" + SlotState(UseIndicator1) + "] : " + Indicator1_Name + "\n" +
       "Ind 2 [" + SlotState(UseIndicator2) + "] : " + Indicator2_Name + "\n" +
-      "Trend [" + SlotState(UseTrendIndicator) + "] : " + TrendIndicator_Name + "\n" +
+      "Trend [" + SlotState(UseTrendIndicator) + "] : " + trendSourceText + "\n" +
       "Trend role  : CONFIRM / FILTER only\n" +
       "Compare     : " + CompareModeText() + " vs trend line\n" +
       "Logic       : " + logicText + "\n" +
       "Outcome     : N-Bar Close (" + IntegerToString(BarsForward) + ")\n" +
+      "Day Filter  : " + dayFilterStatus + "\n" +
       "Time Filter : " + timeFilterStatus + "\n" +
       "----------------------------------------\n" +
       "TOTAL SIGNALS       : " + IntegerToString(TotalSignals) + "\n" +
@@ -655,10 +683,23 @@ int OnInit()
 
    if(UseTrendIndicator)
    {
-      HandleTrend = iCustom(_Symbol, _Period, TrendIndicator_Name);
+      if(TrendSource == TREND_SOURCE_MA)
+      {
+         if(TrendMA_Period < 1)
+         {
+            Print("ERROR: TrendMA_Period must be >= 1");
+            return INIT_FAILED;
+         }
+         HandleTrend = iMA(_Symbol, _Period, TrendMA_Period, 0, TrendMA_Method, TrendMA_AppliedPrice);
+      }
+      else
+      {
+         HandleTrend = iCustom(_Symbol, _Period, TrendIndicator_Name);
+      }
+
       if(HandleTrend == INVALID_HANDLE)
       {
-         Print("ERROR: Cannot load Trend Indicator: ", TrendIndicator_Name, " | Error code: ", GetLastError());
+         Print("ERROR: Cannot load Trend source | Error code: ", GetLastError());
          return INIT_FAILED;
       }
    }
@@ -780,7 +821,8 @@ int OnCalculate(
    CopiedTrend = 0;
    if(UseTrendIndicator)
    {
-      CopiedTrend = CopyBuffer(HandleTrend, TrendIndicator_Buffer, 0, rates_total, BufferTrend);
+      int trendBuf = (TrendSource == TREND_SOURCE_MA) ? 0 : TrendIndicator_Buffer;
+      CopiedTrend = CopyBuffer(HandleTrend, trendBuf, 0, rates_total, BufferTrend);
       if(CopiedTrend <= BarsForward)
          return prev_calculated;
       max_copied = MathMin(max_copied, CopiedTrend);

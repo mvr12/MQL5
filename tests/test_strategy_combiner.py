@@ -156,12 +156,17 @@ class TimeFilterTests(unittest.TestCase):
         self.assertFalse(is_allowed_time(datetime(2026, 8, 3, 2, 1), cfg))
         self.assertFalse(is_allowed_time(datetime(2026, 8, 3, 12, 0), cfg))
 
-    def test_use_time_filter_false_also_skips_day_filter(self):
-        """Documents current MQL behavior (possible future improvement)."""
-        cfg = CombinerConfig(use_time_filter=False, saturday=False, sunday=False)
+    def test_day_filter_works_even_when_hour_filter_is_off(self):
+        cfg = CombinerConfig(use_time_filter=False, use_day_filter=True, saturday=False, sunday=False)
+        saturday = datetime(2026, 8, 8, 3, 0)
+        monday = datetime(2026, 8, 3, 3, 0)
+        self.assertFalse(is_allowed_time(saturday, cfg))
+        self.assertTrue(is_allowed_time(monday, cfg))
+
+    def test_day_filter_can_be_disabled_independently(self):
+        cfg = CombinerConfig(use_time_filter=False, use_day_filter=False, saturday=False, sunday=False)
         saturday = datetime(2026, 8, 8, 3, 0)
         self.assertTrue(is_allowed_time(saturday, cfg))
-        self.assertTrue(is_allowed_day(saturday, cfg) is False)
 
 
 class OutcomeAndStatsTests(unittest.TestCase):
@@ -341,6 +346,8 @@ class RequirementCoverageTests(unittest.TestCase):
         self.assertIn("CONFIRM / FILTER only", text)
         self.assertIn("PLOT_ARROW, 159", text)
         self.assertIn("PLOT_ARROW, 164", text)
+        self.assertIn("iMA(_Symbol, _Period, TrendMA_Period", text)
+        self.assertIn("input bool   UseDayFilter", text)
 
 
 class EnableDisableAndTrendTests(unittest.TestCase):

@@ -39,6 +39,7 @@ class CombinerConfig:
     friday: bool = True
     saturday: bool = False
     sunday: bool = False
+    use_day_filter: bool = True
     use_time_filter: bool = True
     start_hour: int = 0
     start_minute: int = 0
@@ -137,10 +138,10 @@ def is_allowed_day(t: datetime, cfg: CombinerConfig) -> bool:
 
 
 def is_allowed_time(t: datetime, cfg: CombinerConfig) -> bool:
+    if cfg.use_day_filter and not is_allowed_day(t, cfg):
+        return False
     if not cfg.use_time_filter:
         return True
-    if not is_allowed_day(t, cfg):
-        return False
 
     current_minutes = t.hour * 60 + t.minute
     start_minutes = cfg.start_hour * 60 + cfg.start_minute
