@@ -42,6 +42,13 @@
    - فیلتر روز (`UseDayFilter`) از فیلتر ساعت (`UseTimeFilter`) جدا است.
    - علائم Success/Failure توپر و پررنگ شدند: دایره فیروزه‌ای (Wingdings 159) و مربع نارنجی (Wingdings 164).
 
+7. **نسخه ۱.۲ — Lookback، پیپ، کراس و زاویه روند:**
+   - `StatsLookbackBars`: چند کندل اخیر در آمار شمرده شود (`0` = کل تاریخچه).
+   - `BarsForward`: N کندل بعد برای موفق/شکست **و** محاسبه پیپ.
+   - پنل آمار: `TOTAL PIPS` و `AVERAGE PIPS` بعد از N کندل.
+   - هر اسلات سفارشی سه حالت دارد: `BUFFERS` / `CROSS SIGNAL` (کراس دو بافر = خرید/فروش) / `CROSS TREND` (موقعیت دو بافر = فیلتر روند).
+   - `UseTrendAngleFilter`: زاویه بافر روند (درجه) می‌شود BUY / SELL / NEUTRAL.
+
 ---
 
 ## 📂 ساختار فایل‌ها

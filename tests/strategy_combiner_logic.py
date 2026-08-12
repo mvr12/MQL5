@@ -49,7 +49,16 @@ class CombinerConfig:
     show_result_arrows: bool = True
     use_indicator1: bool = True
     use_indicator2: bool = True
+    indicator1_mode: str = "buffers"  # buffers | cross_signal | cross_trend
+    indicator2_mode: str = "buffers"
     use_trend: bool = False
+    use_trend_line_filter: bool = True
+    use_trend_angle_filter: bool = False
+    trend_angle_period: int = 5
+    trend_angle_buy_min: float = 10.0
+    trend_angle_sell_max: float = -10.0
+    pip_size: float = 0.0001
+    stats_lookback_bars: int = 0
     trend_compare: str = TREND_CMP_CLOSE
     buy_above_sell_below: bool = True
 
@@ -91,6 +100,8 @@ class Statistics:
     max_win_streak: int = 0
     max_loss_streak: int = 0
     filtered_by_trend: int = 0
+    total_pips: float = 0.0
+    average_pips: float = 0.0
     events: List[SignalEvent] = field(default_factory=list)
 
     @property
@@ -152,29 +163,116 @@ def is_allowed_time(t: datetime, cfg: CombinerConfig) -> bool:
     return current_minutes >= start_minutes or current_minutes <= end_minutes
 
 
+def _finite(value: float) -> bool:
+    return math.isfinite(value) and value != EMPTY_VALUE
+
+
+def slot_is_signal(used: bool, mode: str) -> bool:
+    return used and mode in ("buffers", "cross_signal")
+
+
+def slot_is_trend(used: bool, mode: str) -> bool:
+    return used and mode == "cross_trend"
+
+
+def slot_dir_buffers(fast: float, slow: float, cfg: CombinerConfig) -> int:
+    buy = is_signal_value(fast, cfg.ignore_zero_values)
+    sell = is_signal_value(slow, cfg.ignore_zero_values)
+    if buy and not sell:
+        return 1
+    if sell and not buy:
+        return -1
+    if buy and sell:
+        return 1
+    return 0
+
+
+def slot_dir_cross(curr_fast, curr_slow, prev_fast, prev_slow) -> int:
+    if not all(_finite(v) for v in (curr_fast, curr_slow, prev_fast, prev_slow)):
+        return 0
+    if prev_fast <= prev_slow and curr_fast > curr_slow:
+        return 1
+    if prev_fast >= prev_slow and curr_fast < curr_slow:
+        return -1
+    return 0
+
+
 def get_source_signal(bar: Bar, cfg: CombinerConfig) -> int:
-    if not cfg.use_indicator1 and not cfg.use_indicator2:
+    """Buffer-mode helper used by existing unit tests."""
+    if not slot_is_signal(cfg.use_indicator1, cfg.indicator1_mode) and not slot_is_signal(
+        cfg.use_indicator2, cfg.indicator2_mode
+    ):
         return 0
 
     want_buy = True
     want_sell = True
 
-    if cfg.use_indicator1:
-        i1_buy = is_signal_value(bar.i1_buy, cfg.ignore_zero_values)
-        i1_sell = is_signal_value(bar.i1_sell, cfg.ignore_zero_values)
-        if not i1_buy:
+    if slot_is_signal(cfg.use_indicator1, cfg.indicator1_mode):
+        if cfg.indicator1_mode != "buffers":
+            return 0
+        dir1 = slot_dir_buffers(bar.i1_buy, bar.i1_sell, cfg)
+        if dir1 != 1:
             want_buy = False
-        if not i1_sell:
+        if dir1 != -1:
             want_sell = False
 
-    if cfg.use_indicator2:
-        i2_buy = is_signal_value(bar.i2_buy, cfg.ignore_zero_values)
-        i2_sell = is_signal_value(bar.i2_sell, cfg.ignore_zero_values)
-        if not i2_buy:
+    if slot_is_signal(cfg.use_indicator2, cfg.indicator2_mode):
+        if cfg.indicator2_mode != "buffers":
+            return 0
+        dir2 = slot_dir_buffers(bar.i2_buy, bar.i2_sell, cfg)
+        if dir2 != 1:
             want_buy = False
-        if not i2_sell:
+        if dir2 != -1:
             want_sell = False
 
+    if want_buy and not want_sell:
+        return 1
+    if want_sell and not want_buy:
+        return -1
+    if want_buy:
+        return 1
+    if want_sell:
+        return -1
+    return 0
+
+
+def get_source_signal_at(bars: Sequence[Bar], shift: int, cfg: CombinerConfig) -> int:
+    bar = series_index(bars, shift)
+    prev = series_index(bars, shift + 1) if shift + 1 < len(bars) else None
+
+    want_buy = True
+    want_sell = True
+    has_slot = False
+
+    def apply(dirn: int) -> None:
+        nonlocal want_buy, want_sell
+        if dirn != 1:
+            want_buy = False
+        if dirn != -1:
+            want_sell = False
+
+    if slot_is_signal(cfg.use_indicator1, cfg.indicator1_mode):
+        has_slot = True
+        if cfg.indicator1_mode == "cross_signal":
+            if prev is None:
+                apply(0)
+            else:
+                apply(slot_dir_cross(bar.i1_buy, bar.i1_sell, prev.i1_buy, prev.i1_sell))
+        else:
+            apply(slot_dir_buffers(bar.i1_buy, bar.i1_sell, cfg))
+
+    if slot_is_signal(cfg.use_indicator2, cfg.indicator2_mode):
+        has_slot = True
+        if cfg.indicator2_mode == "cross_signal":
+            if prev is None:
+                apply(0)
+            else:
+                apply(slot_dir_cross(bar.i2_buy, bar.i2_sell, prev.i2_buy, prev.i2_sell))
+        else:
+            apply(slot_dir_buffers(bar.i2_buy, bar.i2_sell, cfg))
+
+    if not has_slot:
+        return 0
     if want_buy and not want_sell:
         return 1
     if want_sell and not want_buy:
@@ -215,27 +313,72 @@ def get_compare_value(bar: Bar, signal: int, cfg: CombinerConfig) -> float:
     return bar.close
 
 
+def trend_angle(bars: Sequence[Bar], shift: int, cfg: CombinerConfig) -> float:
+    older = shift + cfg.trend_angle_period
+    if older >= len(bars) or cfg.trend_angle_period < 1:
+        return 0.0
+    now = series_index(bars, shift)
+    prev = series_index(bars, older)
+    if not is_valid_trend_value(now.trend) or not is_valid_trend_value(prev.trend):
+        return 0.0
+    dy = now.trend - prev.trend
+    dx = cfg.trend_angle_period * cfg.pip_size
+    if dx == 0:
+        return 0.0
+    return math.degrees(math.atan(dy / dx))
+
+
+def trend_angle_state(bars: Sequence[Bar], shift: int, cfg: CombinerConfig) -> int:
+    angle = trend_angle(bars, shift, cfg)
+    if angle >= cfg.trend_angle_buy_min:
+        return 1
+    if angle <= cfg.trend_angle_sell_max:
+        return -1
+    return 0
+
+
+def is_cross_trend_ok(bar: Bar, signal: int, cfg: CombinerConfig) -> bool:
+    if slot_is_trend(cfg.use_indicator1, cfg.indicator1_mode):
+        if not (_finite(bar.i1_buy) and _finite(bar.i1_sell)):
+            return False
+        pos = 1 if bar.i1_buy > bar.i1_sell else (-1 if bar.i1_buy < bar.i1_sell else 0)
+        if pos != signal:
+            return False
+    if slot_is_trend(cfg.use_indicator2, cfg.indicator2_mode):
+        if not (_finite(bar.i2_buy) and _finite(bar.i2_sell)):
+            return False
+        pos = 1 if bar.i2_buy > bar.i2_sell else (-1 if bar.i2_buy < bar.i2_sell else 0)
+        if pos != signal:
+            return False
+    return True
+
+
 def is_trend_confirmed(bar: Bar, signal: int, cfg: CombinerConfig) -> bool:
-    if not cfg.use_trend:
-        return True
-    if not is_valid_trend_value(bar.trend):
+    if cfg.use_trend and cfg.use_trend_line_filter:
+        if not is_valid_trend_value(bar.trend):
+            return False
+        ref = get_compare_value(bar, signal, cfg)
+        above = ref > bar.trend
+        below = ref < bar.trend
+        if cfg.buy_above_sell_below:
+            ok = above if signal == 1 else below
+        else:
+            ok = below if signal == 1 else above
+        if not ok:
+            return False
+    if not is_cross_trend_ok(bar, signal, cfg):
         return False
+    return True
 
-    ref = get_compare_value(bar, signal, cfg)
-    above = ref > bar.trend
-    below = ref < bar.trend
 
-    if cfg.buy_above_sell_below:
-        if signal == 1:
-            return above
-        if signal == -1:
-            return below
-    else:
-        if signal == 1:
-            return below
-        if signal == -1:
-            return above
-    return False
+def is_trend_confirmed_at(bars: Sequence[Bar], shift: int, signal: int, cfg: CombinerConfig) -> bool:
+    bar = series_index(bars, shift)
+    if not is_trend_confirmed(bar, signal, cfg):
+        return False
+    if cfg.use_trend_angle_filter:
+        if trend_angle_state(bars, shift, cfg) != signal:
+            return False
+    return True
 
 
 def get_final_signal(bar: Bar, cfg: CombinerConfig) -> int:
@@ -247,8 +390,14 @@ def get_final_signal(bar: Bar, cfg: CombinerConfig) -> int:
     return signal
 
 
-def register_result(stats: Statistics, success: bool) -> None:
+def calc_pips(signal: int, signal_close: float, future_close: float, pip_size: float) -> float:
+    raw = (future_close - signal_close) if signal == 1 else (signal_close - future_close)
+    return raw / pip_size
+
+
+def register_result(stats: Statistics, success: bool, pips: float = 0.0) -> None:
     stats.total += 1
+    stats.total_pips += pips
     if success:
         stats.successful += 1
         stats.current_win_streak += 1
@@ -273,19 +422,21 @@ def run_combiner(bars: Sequence[Bar], cfg: CombinerConfig) -> Statistics:
     if rates_total < cfg.bars_forward + 10:
         return stats
 
-    oldest_shift = rates_total - 1
     newest_allowed_shift = cfg.bars_forward + 1
+    oldest_shift = rates_total - 1
+    if cfg.stats_lookback_bars > 0:
+        oldest_shift = min(oldest_shift, newest_allowed_shift + cfg.stats_lookback_bars - 1)
 
     for shift in range(oldest_shift, newest_allowed_shift - 1, -1):
         bar = series_index(bars, shift)
         if not is_allowed_time(bar.time, cfg):
             continue
 
-        source = get_source_signal(bar, cfg)
+        source = get_source_signal_at(bars, shift, cfg)
         if source == 0:
             continue
 
-        if not is_trend_confirmed(bar, source, cfg):
+        if not is_trend_confirmed_at(bars, shift, source, cfg):
             stats.filtered_by_trend += 1
             continue
 
@@ -300,7 +451,8 @@ def run_combiner(bars: Sequence[Bar], cfg: CombinerConfig) -> Statistics:
         elif source == -1:
             success = future_bar.close < bar.close
 
-        register_result(stats, success)
+        pips = calc_pips(source, bar.close, future_bar.close, cfg.pip_size)
+        register_result(stats, success, pips)
         stats.events.append(
             SignalEvent(
                 shift=shift,
@@ -314,6 +466,8 @@ def run_combiner(bars: Sequence[Bar], cfg: CombinerConfig) -> Statistics:
             )
         )
 
+    if stats.total > 0:
+        stats.average_pips = stats.total_pips / stats.total
     return stats
 
 

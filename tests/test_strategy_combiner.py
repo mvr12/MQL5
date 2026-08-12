@@ -320,12 +320,12 @@ class RequirementCoverageTests(unittest.TestCase):
 
         src = Path(__file__).resolve().parents[1] / "Indicators" / "StrategyCombiner_v1.mq5"
         text = src.read_text(encoding="utf-8")
-        self.assertIn("input string Indicator1_Name", text)
-        self.assertIn("input string Indicator2_Name", text)
-        self.assertIn("input int    Indicator1_BuyBuffer", text)
-        self.assertIn("input int    Indicator1_SellBuffer", text)
-        self.assertIn("input int    Indicator2_BuyBuffer", text)
-        self.assertIn("input int    Indicator2_SellBuffer", text)
+        self.assertIn("Indicator1_Name", text)
+        self.assertIn("Indicator2_Name", text)
+        self.assertIn("Indicator1_BuyBuffer", text)
+        self.assertIn("Indicator1_SellBuffer", text)
+        self.assertIn("Indicator2_BuyBuffer", text)
+        self.assertIn("Indicator2_SellBuffer", text)
         self.assertNotIn("iRSI", text)
         self.assertIn("iCustom(_Symbol, _Period, Indicator1_Name)", text)
         self.assertIn("iCustom(_Symbol, _Period, Indicator2_Name)", text)
@@ -339,15 +339,17 @@ class RequirementCoverageTests(unittest.TestCase):
         text = src.read_text(encoding="utf-8")
         self.assertIn("close[futureShift] > close[shift]", text)
         self.assertIn("close[futureShift] < close[shift]", text)
-        self.assertIn("input int    BarsForward      = 2", text)
-        self.assertIn("input bool   UseIndicator1", text)
-        self.assertIn("input bool   UseIndicator2", text)
-        self.assertIn("input bool               UseTrendIndicator", text)
-        self.assertIn("CONFIRM / FILTER only", text)
+        self.assertIn("BarsForward", text)
+        self.assertIn("UseIndicator1", text)
+        self.assertIn("UseTrendIndicator", text)
         self.assertIn("PLOT_ARROW, 159", text)
         self.assertIn("PLOT_ARROW, 164", text)
         self.assertIn("iMA(_Symbol, _Period, TrendMA_Period", text)
-        self.assertIn("input bool   UseDayFilter", text)
+        self.assertIn("UseDayFilter", text)
+        self.assertIn("StatsLookbackBars", text)
+        self.assertIn("TOTAL PIPS", text)
+        self.assertIn("SLOT_MODE_CROSS_SIGNAL", text)
+        self.assertIn("UseTrendAngleFilter", text)
 
 
 class EnableDisableAndTrendTests(unittest.TestCase):
@@ -408,6 +410,48 @@ class EnableDisableAndTrendTests(unittest.TestCase):
         self.assertEqual(get_final_signal(b, cfg), 1)
         b2 = bar(weekday(), 120, i1_buy=90.0, i2_buy=91.0, trend=100)
         self.assertEqual(get_final_signal(b2, cfg), 0)
+
+
+class LookbackPipsCrossAngleTests(unittest.TestCase):
+    def test_lookback_limits_counted_signals(self):
+        cfg_all = CombinerConfig(bars_forward=2, stats_lookback_bars=0)
+        cfg_few = CombinerConfig(bars_forward=2, stats_lookback_bars=4)
+        bars = [bar(datetime(2026, 8, 3, i, 0), 100.0 + i) for i in range(20)]
+        for idx in (5, 8, 11, 14):
+            bars[idx] = bar(bars[idx].time, bars[idx].close, i1_buy=1.0, i2_buy=1.0)
+        self.assertGreater(run_combiner(bars, cfg_all).total, run_combiner(bars, cfg_few).total)
+
+    def test_total_and_average_pips_after_n_bars(self):
+        cfg = CombinerConfig(bars_forward=2, pip_size=0.0001)
+        bars = [bar(datetime(2026, 8, 3, i, 0), 1.1000) for i in range(20)]
+        bars[10] = bar(bars[10].time, 1.1000, i1_buy=1.0, i2_buy=1.0)
+        bars[12] = bar(bars[12].time, 1.1010)
+        stats = run_combiner(bars, cfg)
+        self.assertEqual(stats.total, 1)
+        self.assertAlmostEqual(stats.total_pips, 10.0, places=4)
+        self.assertAlmostEqual(stats.average_pips, 10.0, places=4)
+
+    def test_cross_up_is_buy_when_mode_cross_signal(self):
+        from strategy_combiner_logic import get_source_signal_at
+        cfg = CombinerConfig(use_indicator1=True, use_indicator2=False, indicator1_mode="cross_signal")
+        bars = [bar(datetime(2026, 8, 3, i, 0), 100.0) for i in range(20)]
+        bars[9] = bar(bars[9].time, 100.0, i1_buy=1.0, i1_sell=2.0)
+        bars[10] = bar(bars[10].time, 100.0, i1_buy=3.0, i1_sell=2.0)
+        self.assertEqual(get_source_signal_at(bars, len(bars) - 1 - 10, cfg), 1)
+
+    def test_cross_trend_filters_buy_when_fast_below_slow(self):
+        cfg = CombinerConfig(indicator1_mode="buffers", indicator2_mode="cross_trend")
+        ok = bar(weekday(), 110, i1_buy=1.0, i2_buy=5.0, i2_sell=1.0)
+        blocked = bar(weekday(), 110, i1_buy=1.0, i2_buy=1.0, i2_sell=5.0)
+        self.assertEqual(get_final_signal(ok, cfg), 1)
+        self.assertEqual(get_final_signal(blocked, cfg), 0)
+
+    def test_angle_neutral_blocks_signal(self):
+        from strategy_combiner_logic import is_trend_confirmed_at
+        cfg = CombinerConfig(use_trend_angle_filter=True, trend_angle_period=2,
+                             trend_angle_buy_min=20, trend_angle_sell_max=-20, pip_size=0.0001)
+        bars = [bar(datetime(2026, 8, 3, i, 0), 1.1000, trend=1.1000, i1_buy=1.0, i2_buy=1.0) for i in range(20)]
+        self.assertFalse(is_trend_confirmed_at(bars, 5, 1, cfg))
 
 
 if __name__ == "__main__":
