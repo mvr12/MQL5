@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Strategy Combiner v1 — تست آنلاین منطق</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div>
+        <p class="kicker">تست آنلاین بدون MetaTrader</p>
+        <h1>Strategy Combiner v1</h1>
+        <p class="sub">
+          این صفحه همان قوانین نسخه ۱ را اجرا می‌کند: دو اندیکاتور سفارشی، منطق AND،
+          فیلتر روز/ساعت، و موفقیت/شکست بر اساس Close بعد از N کندل.
+        </p>
+      </div>
+      <div class="badge-col">
+        <span class="badge">اندیکاتور سفارشی — نه EA</span>
+        <span class="badge muted">کامپایلر MT5 اینجا نیست؛ منطق ۱۰۰٪ شبیه‌سازی می‌شود</span>
+      </div>
+    </header>
+
+    <section class="grid">
+      <aside class="panel">
+        <h2>سناریوهای آماده</h2>
+        <div class="scenarios" id="scenarios"></div>
+
+        <h2>تنظیمات نسخه ۱</h2>
+        <label>BarsForward (N کندل بعد)
+          <input type="number" id="barsForward" min="1" max="20" value="2" />
+        </label>
+        <label class="check">
+          <input type="checkbox" id="ignoreZero" checked />
+          IgnoreZeroValues
+        </label>
+        <label class="check">
+          <input type="checkbox" id="useTimeFilter" checked />
+          UseTimeFilter (ساعت + روز)
+        </label>
+        <div class="row">
+          <label>شروع
+            <input type="time" id="startTime" value="00:00" />
+          </label>
+          <label>پایان
+            <input type="time" id="endTime" value="23:59" />
+          </label>
+        </div>
+        <div class="days" id="days"></div>
+        <button id="runBtn" class="primary">اجرای شبیه‌سازی</button>
+        <p class="hint">
+          کندل آخر در حال تشکیل است (shift 0) و در آمار نمی‌آید.
+          نتیجه فقط وقتی قطعی است که N کندل بعد هم بسته شده باشد.
+        </p>
+      </aside>
+
+      <main>
+        <div class="chart-wrap">
+          <canvas id="chart" width="1100" height="420"></canvas>
+        </div>
+        <div class="bottom">
+          <pre class="stats" id="stats"></pre>
+          <div class="log-wrap">
+            <h2>رد سیگنال‌ها (قدیمی → جدید)</h2>
+            <div class="log" id="log"></div>
+          </div>
+        </div>
+      </main>
+    </section>
+
+    <section class="tests-panel">
+      <div class="tests-head">
+        <h2>چک‌لیست انتظارات نسخه ۱</h2>
+        <div>
+          <span id="testSummary" class="summary"></span>
+          <button id="runTestsBtn">اجرای همه تست‌ها</button>
+        </div>
+      </div>
+      <div id="testList" class="test-list"></div>
+    </section>
+  </div>
+  <script src="engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
