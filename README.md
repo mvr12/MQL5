@@ -62,6 +62,10 @@
 
 - `Indicators/StrategyCombiner_v1.mq5`: فایل اصلی اندیکاتور (مسیر استاندارد MQL5).
 - `StrategyCombiner_v1.mq5`: کپی فایل در ریشه مخزن جهت دسترسی سریع.
+<<<<<<< HEAD
+=======
+- `Experts/StrategyCombiner_EA_v1.mq5`: اکسپرت معامله‌گر خودکار با همان تنظیمات Combiner.
+>>>>>>> 86c964a (Add StrategyCombiner auto-trading EA using the indicator buffers)
 
 ---
 
