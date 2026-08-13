@@ -176,6 +176,7 @@ input bool             ShowResultArrows = true;
 input bool             ShowTrendLine    = true;
 input bool             ShowStatistics   = true;
 input bool             ShowPipLabels    = true;
+input int              MaxPipLabels     = 80;
 input ENUM_PROFIT_UNIT ProfitUnit       = UNIT_PIPS;
 input int              PipLabelFontSize = 9;
 input color            ProfitLabelColor = C'0,230,180';
@@ -225,6 +226,13 @@ int    FilteredByTrend   = 0;
 double TotalPips         = 0.0;
 double AveragePips       = 0.0;
 int    CountedBarsWindow = 0;
+bool   g_busy            = false;
+
+
+int Px(const int rates_total, const int shift)
+{
+   return rates_total - 1 - shift;
+}
 
 
 //==================================================================
@@ -344,12 +352,15 @@ void DeletePipLabels()
 
 void DrawPipLabel(const datetime barTime, const double price, const double value)
 {
-   string name = SC_PL_PREFIX + TimeToString(barTime, TIME_DATE|TIME_MINUTES) + "_" + DoubleToString(price, _Digits);
+   string name = SC_PL_PREFIX + IntegerToString((long)barTime);
    string text = StringFormat("%+.1f %s", value, ProfitUnitText());
    color  clr  = (value > 0.0) ? ProfitLabelColor : ((value < 0.0) ? LossLabelColor : clrSilver);
 
    if(ObjectFind(0, name) < 0)
-      ObjectCreate(0, name, OBJ_TEXT, 0, barTime, price);
+   {
+      if(!ObjectCreate(0, name, OBJ_TEXT, 0, barTime, price))
+         return;
+   }
 
    ObjectSetInteger(0, name, OBJPROP_TIME, barTime);
    ObjectSetDouble(0, name, OBJPROP_PRICE, price);
@@ -511,6 +522,7 @@ int GetSourceSignal(const int shift, const int max_copied)
 //  TREND LINE COMPARE
 //==================================================================
 double GetCompareValue(
+   const int rates_total,
    const int shift,
    const int signal,
    const double &open[],
@@ -519,12 +531,13 @@ double GetCompareValue(
    const double &close[]
 )
 {
+   const int i = Px(rates_total, shift);
    if(TrendCompareWith == TREND_CMP_OPEN)
-      return open[shift];
+      return open[i];
    if(TrendCompareWith == TREND_CMP_HIGH)
-      return high[shift];
+      return high[i];
    if(TrendCompareWith == TREND_CMP_LOW)
-      return low[shift];
+      return low[i];
 
    if(TrendCompareWith == TREND_CMP_SIGNAL)
    {
@@ -543,10 +556,11 @@ double GetCompareValue(
       if(n > 0)
          return sum / n;
    }
-   return close[shift];
+   return close[i];
 }
 
 bool IsTrendLineConfirmed(
+   const int rates_total,
    const int signal,
    const int shift,
    const double &open[],
@@ -562,7 +576,7 @@ bool IsTrendLineConfirmed(
    if(!IsValidTrendValue(BufferTrend[shift]))
       return false;
 
-   double ref = GetCompareValue(shift, signal, open, high, low, close);
+   double ref = GetCompareValue(rates_total, shift, signal, open, high, low, close);
    bool above = (ref > BufferTrend[shift]);
    bool below = (ref < BufferTrend[shift]);
 
@@ -649,6 +663,7 @@ bool IsTrendAngleConfirmed(const int signal, const int shift)
 }
 
 bool IsTrendConfirmed(
+   const int rates_total,
    const int signal,
    const int shift,
    const double &open[],
@@ -657,7 +672,7 @@ bool IsTrendConfirmed(
    const double &close[]
 )
 {
-   if(!IsTrendLineConfirmed(signal, shift, open, high, low, close))
+   if(!IsTrendLineConfirmed(rates_total, signal, shift, open, high, low, close))
       return false;
    if(!IsCrossTrendConfirmed(signal, shift))
       return false;
@@ -669,6 +684,7 @@ bool IsTrendConfirmed(
 }
 
 int GetFinalSignal(
+   const int rates_total,
    const int shift,
    const int max_copied,
    const double &open[],
@@ -680,7 +696,7 @@ int GetFinalSignal(
    int signal = GetSourceSignal(shift, max_copied);
    if(signal == 0)
       return 0;
-   if(!IsTrendConfirmed(signal, shift, open, high, low, close))
+   if(!IsTrendConfirmed(rates_total, signal, shift, open, high, low, close))
       return 0;
    return signal;
 }
@@ -742,14 +758,15 @@ void CalculateStatistics(
 
    for(int shift = oldestShift; shift >= newestAllowedShift; shift--)
    {
-      if(!IsAllowedTime(time[shift]))
+      const int i = Px(rates_total, shift);
+      if(!IsAllowedTime(time[i]))
          continue;
 
       int source = GetSourceSignal(shift, max_copied);
       if(source == 0)
          continue;
 
-      if(!IsTrendConfirmed(source, shift, open, high, low, close))
+      if(!IsTrendConfirmed(rates_total, source, shift, open, high, low, close))
       {
          FilteredByTrend++;
          continue;
@@ -759,13 +776,14 @@ void CalculateStatistics(
       if(futureShift < 1)
          continue;
 
+      const int f = Px(rates_total, futureShift);
       bool success = false;
       if(source == 1)
-         success = (close[futureShift] > close[shift]);
+         success = (close[f] > close[i]);
       else if(source == -1)
-         success = (close[futureShift] < close[shift]);
+         success = (close[f] < close[i]);
 
-      RegisterResult(success, CalcPips(source, close[shift], close[futureShift]));
+      RegisterResult(success, CalcPips(source, close[i], close[f]));
    }
 
    if(TotalSignals > 0)
@@ -814,15 +832,20 @@ void DrawSignals(
    const double &high[],
    const double &low[],
    const double &close[],
-   const int max_copied
+   const int max_copied,
+   const bool fullRedraw
 )
 {
-   ArrayInitialize(BuySignalBuffer,  EMPTY_VALUE);
-   ArrayInitialize(SellSignalBuffer, EMPTY_VALUE);
-   ArrayInitialize(SuccessBuffer,    EMPTY_VALUE);
-   ArrayInitialize(FailureBuffer,    EMPTY_VALUE);
-   DrawTrendLine(rates_total, max_copied);
-   DeletePipLabels();
+   if(fullRedraw)
+   {
+      ArrayInitialize(BuySignalBuffer,  EMPTY_VALUE);
+      ArrayInitialize(SellSignalBuffer, EMPTY_VALUE);
+      ArrayInitialize(SuccessBuffer,    EMPTY_VALUE);
+      ArrayInitialize(FailureBuffer,    EMPTY_VALUE);
+      DrawTrendLine(rates_total, max_copied);
+      if(ShowPipLabels)
+         DeletePipLabels();
+   }
 
    if(!ShowSignalArrows && !ShowResultArrows && !ShowPipLabels)
       return;
@@ -831,13 +854,18 @@ void DrawSignals(
    int oldestShift        = MathMin(rates_total - 1, max_copied - 1);
    if(StatsLookbackBars > 0)
       oldestShift = MathMin(oldestShift, newestAllowedShift + StatsLookbackBars - 1);
+   if(!fullRedraw)
+      oldestShift = MathMin(oldestShift, 5);
+
+   const int maxLabels = (MaxPipLabels < 1) ? 80 : MaxPipLabels;
 
    for(int shift = oldestShift; shift >= newestAllowedShift; shift--)
    {
-      if(!IsAllowedTime(time[shift]))
+      const int i = Px(rates_total, shift);
+      if(!IsAllowedTime(time[i]))
          continue;
 
-      int signal = GetFinalSignal(shift, max_copied, open, high, low, close);
+      int signal = GetFinalSignal(rates_total, shift, max_copied, open, high, low, close);
       if(signal == 0)
          continue;
 
@@ -845,42 +873,42 @@ void DrawSignals(
       if(signal == 1)
       {
          if(ShowSignalArrows)
-            BuySignalBuffer[shift] = low[shift] - 12 * _Point;
+            BuySignalBuffer[shift] = low[i] - 12 * _Point;
          if(futureShift >= 1)
          {
-            double pnl = CalcDisplayProfit(1, close[shift], close[futureShift]);
+            const int f = Px(rates_total, futureShift);
+            double pnl = CalcDisplayProfit(1, close[i], close[f]);
             if(ShowResultArrows)
             {
-               if(close[futureShift] > close[shift])
-                  SuccessBuffer[shift] = low[shift] - 38 * _Point;
+               if(close[f] > close[i])
+                  SuccessBuffer[shift] = low[i] - 38 * _Point;
                else
-                  FailureBuffer[shift] = low[shift] - 38 * _Point;
+                  FailureBuffer[shift] = low[i] - 38 * _Point;
             }
-            if(ShowPipLabels)
-               DrawPipLabel(time[shift], low[shift] - 58 * _Point, pnl);
+            if(ShowPipLabels && shift <= maxLabels)
+               DrawPipLabel(time[i], low[i] - 58 * _Point, pnl);
          }
       }
       else if(signal == -1)
       {
          if(ShowSignalArrows)
-            SellSignalBuffer[shift] = high[shift] + 12 * _Point;
+            SellSignalBuffer[shift] = high[i] + 12 * _Point;
          if(futureShift >= 1)
          {
-            double pnl = CalcDisplayProfit(-1, close[shift], close[futureShift]);
+            const int f = Px(rates_total, futureShift);
+            double pnl = CalcDisplayProfit(-1, close[i], close[f]);
             if(ShowResultArrows)
             {
-               if(close[futureShift] < close[shift])
-                  SuccessBuffer[shift] = high[shift] + 38 * _Point;
+               if(close[f] < close[i])
+                  SuccessBuffer[shift] = high[i] + 38 * _Point;
                else
-                  FailureBuffer[shift] = high[shift] + 38 * _Point;
+                  FailureBuffer[shift] = high[i] + 38 * _Point;
             }
-            if(ShowPipLabels)
-               DrawPipLabel(time[shift], high[shift] + 58 * _Point, pnl);
+            if(ShowPipLabels && shift <= maxLabels)
+               DrawPipLabel(time[i], high[i] + 58 * _Point, pnl);
          }
       }
    }
-   if(ShowPipLabels)
-      ChartRedraw(0);
 }
 
 
@@ -1102,21 +1130,31 @@ int OnCalculate(
    const int &spread[]
 )
 {
-   if(rates_total < BarsForward + 10)
-      return 0;
+   if(g_busy)
+      return prev_calculated;
+   g_busy = true;
 
-   ArraySetAsSeries(time,  true);
-   ArraySetAsSeries(open,  true);
-   ArraySetAsSeries(high,  true);
-   ArraySetAsSeries(low,   true);
-   ArraySetAsSeries(close, true);
+   if(rates_total < BarsForward + 10)
+   {
+      g_busy = false;
+      return 0;
+   }
 
    if(UseIndicator1 && BarsCalculated(Handle1) <= BarsForward)
+   {
+      g_busy = false;
       return prev_calculated;
+   }
    if(UseIndicator2 && BarsCalculated(Handle2) <= BarsForward)
+   {
+      g_busy = false;
       return prev_calculated;
+   }
    if((UseTrendIndicator || UseTrendAngleFilter) && BarsCalculated(HandleTrend) <= BarsForward)
+   {
+      g_busy = false;
       return prev_calculated;
+   }
 
    ArraySetAsSeries(Buffer1_Buy,  true);
    ArraySetAsSeries(Buffer1_Sell, true);
@@ -1126,53 +1164,66 @@ int OnCalculate(
    ArraySetAsSeries(Buffer1_Trend,  true);
    ArraySetAsSeries(Buffer2_Trend,  true);
 
-   int max_copied = rates_total;
+   int copyCount = rates_total;
+   if(StatsLookbackBars > 0)
+      copyCount = MathMin(rates_total, StatsLookbackBars + BarsForward + 30);
+
+   int max_copied = copyCount;
    Copied1 = 0;
    Copied2 = 0;
    CopiedTrend = 0;
 
    if(UseIndicator1)
    {
-      int cBuy  = CopyBuffer(Handle1, Indicator1_BuyBuffer,  0, rates_total, Buffer1_Buy);
-      int cSell = CopyBuffer(Handle1, Indicator1_SellBuffer, 0, rates_total, Buffer1_Sell);
+      int cBuy  = CopyBuffer(Handle1, Indicator1_BuyBuffer,  0, copyCount, Buffer1_Buy);
+      int cSell = CopyBuffer(Handle1, Indicator1_SellBuffer, 0, copyCount, Buffer1_Sell);
       if(cBuy <= BarsForward || cSell <= BarsForward)
+      {
+         g_busy = false;
          return prev_calculated;
+      }
       Copied1 = MathMin(cBuy, cSell);
       max_copied = MathMin(max_copied, Copied1);
    }
    else
    {
-      ArrayResize(Buffer1_Buy, rates_total);
-      ArrayResize(Buffer1_Sell, rates_total);
+      ArrayResize(Buffer1_Buy, copyCount);
+      ArrayResize(Buffer1_Sell, copyCount);
       ArrayInitialize(Buffer1_Buy, EMPTY_VALUE);
       ArrayInitialize(Buffer1_Sell, EMPTY_VALUE);
-      Copied1 = rates_total;
+      Copied1 = copyCount;
    }
 
    if(UseIndicator2)
    {
-      int cBuy  = CopyBuffer(Handle2, Indicator2_BuyBuffer,  0, rates_total, Buffer2_Buy);
-      int cSell = CopyBuffer(Handle2, Indicator2_SellBuffer, 0, rates_total, Buffer2_Sell);
+      int cBuy  = CopyBuffer(Handle2, Indicator2_BuyBuffer,  0, copyCount, Buffer2_Buy);
+      int cSell = CopyBuffer(Handle2, Indicator2_SellBuffer, 0, copyCount, Buffer2_Sell);
       if(cBuy <= BarsForward || cSell <= BarsForward)
+      {
+         g_busy = false;
          return prev_calculated;
+      }
       Copied2 = MathMin(cBuy, cSell);
       max_copied = MathMin(max_copied, Copied2);
    }
    else
    {
-      ArrayResize(Buffer2_Buy, rates_total);
-      ArrayResize(Buffer2_Sell, rates_total);
+      ArrayResize(Buffer2_Buy, copyCount);
+      ArrayResize(Buffer2_Sell, copyCount);
       ArrayInitialize(Buffer2_Buy, EMPTY_VALUE);
       ArrayInitialize(Buffer2_Sell, EMPTY_VALUE);
-      Copied2 = rates_total;
+      Copied2 = copyCount;
    }
 
    if(UseTrendIndicator || UseTrendAngleFilter)
    {
       int trendBuf = (TrendSource == TREND_SOURCE_MA) ? 0 : TrendIndicator_Buffer;
-      CopiedTrend = CopyBuffer(HandleTrend, trendBuf, 0, rates_total, BufferTrend);
+      CopiedTrend = CopyBuffer(HandleTrend, trendBuf, 0, copyCount, BufferTrend);
       if(CopiedTrend <= BarsForward)
+      {
+         g_busy = false;
          return prev_calculated;
+      }
       max_copied = MathMin(max_copied, CopiedTrend);
    }
 
@@ -1180,16 +1231,27 @@ int OnCalculate(
    CopiedTrend2 = 0;
    if(UseTrendLineCross)
    {
-      CopiedTrend1 = CopyBuffer(Handle1, TrendLine1_Buffer, 0, rates_total, Buffer1_Trend);
-      CopiedTrend2 = CopyBuffer(Handle2, TrendLine2_Buffer, 0, rates_total, Buffer2_Trend);
+      CopiedTrend1 = CopyBuffer(Handle1, TrendLine1_Buffer, 0, copyCount, Buffer1_Trend);
+      CopiedTrend2 = CopyBuffer(Handle2, TrendLine2_Buffer, 0, copyCount, Buffer2_Trend);
       if(CopiedTrend1 <= BarsForward || CopiedTrend2 <= BarsForward)
+      {
+         g_busy = false;
          return prev_calculated;
+      }
       max_copied = MathMin(max_copied, MathMin(CopiedTrend1, CopiedTrend2));
    }
 
-   CalculateStatistics(rates_total, time, open, high, low, close, max_copied);
-   DrawSignals(rates_total, time, open, high, low, close, max_copied);
-   ShowStats();
+   const bool fullRedraw = (prev_calculated <= 0 || rates_total != prev_calculated);
+   if(fullRedraw)
+   {
+      CalculateStatistics(rates_total, time, open, high, low, close, max_copied);
+      DrawSignals(rates_total, time, open, high, low, close, max_copied, true);
+      ShowStats();
+   }
+   else
+      DrawSignals(rates_total, time, open, high, low, close, max_copied, false);
+
+   g_busy = false;
    return rates_total;
 }
 //+------------------------------------------------------------------+

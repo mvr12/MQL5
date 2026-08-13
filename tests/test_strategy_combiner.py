@@ -337,8 +337,8 @@ class RequirementCoverageTests(unittest.TestCase):
 
         src = Path(__file__).resolve().parents[1] / "Indicators" / "StrategyCombiner_v1.mq5"
         text = src.read_text(encoding="utf-8")
-        self.assertIn("close[futureShift] > close[shift]", text)
-        self.assertIn("close[futureShift] < close[shift]", text)
+        self.assertIn("close[f] > close[i]", text)
+        self.assertIn("close[f] < close[i]", text)
         self.assertIn("BarsForward", text)
         self.assertIn("UseIndicator1", text)
         self.assertIn("UseTrendIndicator", text)
