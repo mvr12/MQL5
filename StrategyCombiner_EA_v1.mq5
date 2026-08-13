@@ -1,11 +1,12 @@
 //+------------------------------------------------------------------+
 //| StrategyCombiner_EA_v1.mq5                                       |
 //| Auto-trader driven by StrategyCombiner_v1 buffers                |
+//| Exit = same as indicator: close after BarsForward candles        |
 //| Does not modify the indicator file.                              |
 //+------------------------------------------------------------------+
 #property strict
 #property copyright "Strategy Combiner"
-#property version   "1.00"
+#property version   "1.10"
 
 #include <Trade/Trade.mqh>
 
@@ -104,7 +105,7 @@ input int                   TrendLine2_Buffer = 0;
 
 input group "=== Count & Outcome ==="
 input int    StatsLookbackBars = 1000;
-input int    BarsForward       = 2;
+input int    BarsForward       = 2;     // N کندل بعد — معامله همین‌جا بسته می‌شود
 input bool   IgnoreZeroValues  = true;
 
 input group "=== Trading Days ==="
@@ -131,7 +132,8 @@ input int    EndMinute        = 59;
 input group "=== Auto Trade ==="
 input bool         AllowBuy           = true;
 input bool         AllowSell          = true;
-input bool         CloseOpposite      = true;
+input bool         CloseAfterNBars    = true;   // مثل اندیکاتور: بعد از N کندل ببند
+input bool         CloseOpposite      = false;  // سیگنال مخالف قبل از N کندل؟ پیش‌فرض خیر
 input bool         OnePositionOnly    = true;
 input bool         TradeOnlyNewBar    = true;
 input int          MaxSpreadPoints    = 40;
@@ -142,9 +144,9 @@ input string       TradeComment       = "SC_EA_v1";
 input group "=== Money Management ==="
 input ENUM_LOT_MODE LotMode           = LOT_FIXED;
 input double        FixedLot          = 0.10;
-input double        RiskPercent       = 1.0;   // if LOT_RISK_PERCENT and SL > 0
-input int           StopLossPoints    = 300;   // 0 = no SL
-input int           TakeProfitPoints  = 600;   // 0 = no TP
+input double        RiskPercent       = 1.0;   // فقط اگر SL اضطراری > 0
+input int           StopLossPoints    = 0;     // 0 = بدون SL — خروج اصلی N کندل است
+input int           TakeProfitPoints  = 0;     // 0 = بدون TP — خروج اصلی N کندل است
 
 input group "=== Combiner File ==="
 input string        CombinerName      = "StrategyCombiner_v1";
@@ -304,6 +306,79 @@ void CloseMyPositions(const int typeFilter = -1)
    }
 }
 
+string BuildTradeComment(const datetime signalBar)
+{
+   return TradeComment + "|" + IntegerToString((long)signalBar);
+}
+
+datetime PositionSignalBarTime()
+{
+   string c = PositionGetString(POSITION_COMMENT);
+   int p = StringFind(c, "|");
+   if(p >= 0)
+   {
+      long t = StringToInteger(StringSubstr(c, p + 1));
+      if(t > 0)
+         return (datetime)t;
+   }
+   // fallback: entry time ≈ bar after signal
+   return (datetime)PositionGetInteger(POSITION_TIME);
+}
+
+bool PositionHasEncodedSignalBar()
+{
+   string c = PositionGetString(POSITION_COMMENT);
+   return (StringFind(c, "|") >= 0);
+}
+
+// Indicator: result is known when the Nth candle AFTER the signal bar has closed.
+// Signal at shift S → evaluate at S - BarsForward, and that bar must be closed (shift >= 1).
+// So we close when the signal candle is at least BarsForward+1 bars back.
+bool NBarsCompleted(const datetime signalOrEntry, const bool encodedSignalBar)
+{
+   int n = BarsForward;
+   if(n < 1)
+      n = 1;
+
+   int sh = iBarShift(_Symbol, _Period, signalOrEntry, false);
+   if(sh < 0)
+      return false;
+
+   if(encodedSignalBar)
+      return (sh >= n + 1);
+
+   // fallback from POSITION_TIME (opened on the bar after signal)
+   return (sh >= n);
+}
+
+void CloseExpiredNBarPositions()
+{
+   if(!CloseAfterNBars)
+      return;
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0)
+         continue;
+      if(PositionGetString(POSITION_SYMBOL) != _Symbol)
+         continue;
+      if((ulong)PositionGetInteger(POSITION_MAGIC) != MagicNumber)
+         continue;
+
+      datetime mark = PositionSignalBarTime();
+      bool encoded = PositionHasEncodedSignalBar();
+      if(!NBarsCompleted(mark, encoded))
+         continue;
+
+      if(trade.PositionClose(ticket))
+         Print("EA: closed after ", BarsForward, " candles. ticket=", ticket);
+      else
+         Print("EA: N-bar close failed ticket=", ticket, " ",
+               trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+   }
+}
+
 double NormalizeLot(double lot)
 {
    double minLot  = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_MIN);
@@ -349,7 +424,7 @@ bool SpreadOk()
    return (MaxSpreadPoints <= 0 || spread <= MaxSpreadPoints);
 }
 
-bool OpenTrade(const int signal)
+bool OpenTrade(const int signal, const datetime signalBar)
 {
    if(signal == 1 && !AllowBuy)
       return false;
@@ -365,6 +440,7 @@ bool OpenTrade(const int signal)
    double bid = SymbolInfoDouble(_Symbol, SYMBOL_BID);
    int digits = (int)SymbolInfoInteger(_Symbol, SYMBOL_DIGITS);
    double point = SymbolInfoDouble(_Symbol, SYMBOL_POINT);
+   string comment = BuildTradeComment(signalBar);
 
    double sl = 0.0, tp = 0.0;
    if(signal == 1)
@@ -374,12 +450,12 @@ bool OpenTrade(const int signal)
       if(TakeProfitPoints > 0)
          tp = NormalizeDouble(ask + TakeProfitPoints * point, digits);
       double lot = CalcLot(sl, true);
-      if(!trade.Buy(lot, _Symbol, ask, sl, tp, TradeComment))
+      if(!trade.Buy(lot, _Symbol, ask, sl, tp, comment))
       {
          Print("EA BUY failed: ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
          return false;
       }
-      Print("EA BUY lot=", lot, " sl=", sl, " tp=", tp);
+      Print("EA BUY lot=", lot, " hold=", BarsForward, " bars  sl=", sl, " tp=", tp);
       return true;
    }
 
@@ -388,12 +464,12 @@ bool OpenTrade(const int signal)
    if(TakeProfitPoints > 0)
       tp = NormalizeDouble(bid - TakeProfitPoints * point, digits);
    double lot = CalcLot(sl, false);
-   if(!trade.Sell(lot, _Symbol, bid, sl, tp, TradeComment))
+   if(!trade.Sell(lot, _Symbol, bid, sl, tp, comment))
    {
       Print("EA SELL failed: ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
       return false;
    }
-   Print("EA SELL lot=", lot, " sl=", sl, " tp=", tp);
+   Print("EA SELL lot=", lot, " hold=", BarsForward, " bars  sl=", sl, " tp=", tp);
    return true;
 }
 
@@ -417,12 +493,18 @@ void ProcessSignal(const int signal)
    if(OnePositionOnly && CountMyPositions() > 0)
       return;
 
-   if(OpenTrade(signal))
+   if(OpenTrade(signal, closedBar))
       g_lastSignalBar = closedBar;
 }
 
 int OnInit()
 {
+   if(BarsForward < 1)
+   {
+      Print("ERROR: BarsForward must be >= 1");
+      return INIT_FAILED;
+   }
+
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
    trade.SetTypeFillingBySymbol(_Symbol);
@@ -436,7 +518,9 @@ int OnInit()
    }
 
    g_lastBar = iTime(_Symbol, _Period, 0);
-   Print("StrategyCombiner EA ready. Combiner=", CombinerName);
+   Print("StrategyCombiner EA ready. Combiner=", CombinerName,
+         "  exit after ", BarsForward, " candles (CloseAfterNBars=",
+         (CloseAfterNBars ? "ON" : "OFF"), ")");
    return INIT_SUCCEEDED;
 }
 
@@ -448,9 +532,16 @@ void OnDeinit(const int reason)
 
 void OnTick()
 {
-   if(TradeOnlyNewBar && !IsNewBar())
-      return;
+   if(TradeOnlyNewBar)
+   {
+      if(!IsNewBar())
+         return;
+   }
+   else
+      IsNewBar();
 
+   // First close trades whose N candles have finished — same rule as the indicator.
+   CloseExpiredNBarPositions();
    ProcessSignal(CurrentSignal());
 }
 //+------------------------------------------------------------------+

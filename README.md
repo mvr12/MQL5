@@ -62,10 +62,17 @@
 
 - `Indicators/StrategyCombiner_v1.mq5`: فایل اصلی اندیکاتور (مسیر استاندارد MQL5).
 - `StrategyCombiner_v1.mq5`: کپی فایل در ریشه مخزن جهت دسترسی سریع.
-<<<<<<< HEAD
-=======
 - `Experts/StrategyCombiner_EA_v1.mq5`: اکسپرت معامله‌گر خودکار با همان تنظیمات Combiner.
->>>>>>> 86c964a (Add StrategyCombiner auto-trading EA using the indicator buffers)
+- `StrategyCombiner_EA_v1.mq5`: کپی اکسپرت در ریشه مخزن.
+
+### اکسپرت خودکار (`StrategyCombiner_EA_v1`)
+
+خروج معامله **مثل اندیکاتور** است: بعد از `BarsForward` کندل بسته می‌شود (پیش‌فرض ۲). حد ضرر / حد سود پیش‌فرض صفر است و فقط اگر خودتان عدد بگذارید به‌عنوان محافظ اختیاری کار می‌کند.
+
+1. اول `StrategyCombiner_v1.mq5` را در `MQL5/Indicators/` کامپایل کنید.
+2. بعد `Experts/StrategyCombiner_EA_v1.mq5` را کامپایل و روی چارت بیندازید.
+3. تنظیمات Combiner در اکسپرت باید با اندیکاتور یکی باشد.
+4. AutoTrading را روشن کنید. بهتر است اول روی حساب دمو تست شود.
 
 ---
 
