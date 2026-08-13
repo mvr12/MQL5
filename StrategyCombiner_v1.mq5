@@ -74,8 +74,14 @@ enum ENUM_SLOT_MODE
 
 enum ENUM_TREND_CROSS_ROLE
 {
-   TREND_CROSS_SIGNAL    = 0, // کراس خط روند Ind1 با Ind2 = سیگنال خرید/فروش
-   TREND_CROSS_NEW_TREND = 1  // کراس = شروع روند جدید و بعد فیلتر جهت
+   TREND_CROSS_SIGNAL    = 0,
+   TREND_CROSS_NEW_TREND = 1
+};
+
+enum ENUM_PROFIT_UNIT
+{
+   UNIT_PIPS   = 0, // پیپ
+   UNIT_POINTS = 1  // پوینت
 };
 
 
@@ -165,10 +171,15 @@ input int    EndMinute        = 59;
 //  DISPLAY
 //==================================================================
 input group "=== Display ==="
-input bool   ShowSignalArrows = true;
-input bool   ShowResultArrows = true;
-input bool   ShowTrendLine    = true;
-input bool   ShowStatistics   = true;
+input bool             ShowSignalArrows = true;
+input bool             ShowResultArrows = true;
+input bool             ShowTrendLine    = true;
+input bool             ShowStatistics   = true;
+input bool             ShowPipLabels    = true;
+input ENUM_PROFIT_UNIT ProfitUnit       = UNIT_PIPS;
+input int              PipLabelFontSize = 9;
+input color            ProfitLabelColor = C'0,230,180';
+input color            LossLabelColor   = C'255,80,40';
 
 
 //==================================================================
@@ -302,6 +313,54 @@ double CalcPips(const int signal, const double signalClose, const double futureC
 {
    double raw = (signal == 1) ? (futureClose - signalClose) : (signalClose - futureClose);
    return raw / PipSize();
+}
+
+double CalcPoints(const int signal, const double signalClose, const double futureClose)
+{
+   double raw = (signal == 1) ? (futureClose - signalClose) : (signalClose - futureClose);
+   if(_Point <= 0.0)
+      return raw;
+   return raw / _Point;
+}
+
+double CalcDisplayProfit(const int signal, const double signalClose, const double futureClose)
+{
+   if(ProfitUnit == UNIT_POINTS)
+      return CalcPoints(signal, signalClose, futureClose);
+   return CalcPips(signal, signalClose, futureClose);
+}
+
+string ProfitUnitText()
+{
+   return (ProfitUnit == UNIT_POINTS) ? "pt" : "pip";
+}
+
+#define SC_PL_PREFIX "SC_PL_"
+
+void DeletePipLabels()
+{
+   ObjectsDeleteAll(0, SC_PL_PREFIX);
+}
+
+void DrawPipLabel(const datetime barTime, const double price, const double value)
+{
+   string name = SC_PL_PREFIX + TimeToString(barTime, TIME_DATE|TIME_MINUTES) + "_" + DoubleToString(price, _Digits);
+   string text = StringFormat("%+.1f %s", value, ProfitUnitText());
+   color  clr  = (value > 0.0) ? ProfitLabelColor : ((value < 0.0) ? LossLabelColor : clrSilver);
+
+   if(ObjectFind(0, name) < 0)
+      ObjectCreate(0, name, OBJ_TEXT, 0, barTime, price);
+
+   ObjectSetInteger(0, name, OBJPROP_TIME, barTime);
+   ObjectSetDouble(0, name, OBJPROP_PRICE, price);
+   ObjectSetString(0, name, OBJPROP_TEXT, text);
+   ObjectSetString(0, name, OBJPROP_FONT, "Arial Bold");
+   ObjectSetInteger(0, name, OBJPROP_FONTSIZE, PipLabelFontSize);
+   ObjectSetInteger(0, name, OBJPROP_COLOR, clr);
+   ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_CENTER);
+   ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, name, OBJPROP_BACK, false);
 }
 
 bool SlotIsSignalSource(const bool used, const ENUM_SLOT_MODE mode)
@@ -763,8 +822,9 @@ void DrawSignals(
    ArrayInitialize(SuccessBuffer,    EMPTY_VALUE);
    ArrayInitialize(FailureBuffer,    EMPTY_VALUE);
    DrawTrendLine(rates_total, max_copied);
+   DeletePipLabels();
 
-   if(!ShowSignalArrows && !ShowResultArrows)
+   if(!ShowSignalArrows && !ShowResultArrows && !ShowPipLabels)
       return;
 
    int newestAllowedShift = 1;
@@ -786,27 +846,41 @@ void DrawSignals(
       {
          if(ShowSignalArrows)
             BuySignalBuffer[shift] = low[shift] - 12 * _Point;
-         if(ShowResultArrows && futureShift >= 1)
+         if(futureShift >= 1)
          {
-            if(close[futureShift] > close[shift])
-               SuccessBuffer[shift] = low[shift] - 38 * _Point;
-            else
-               FailureBuffer[shift] = low[shift] - 38 * _Point;
+            double pnl = CalcDisplayProfit(1, close[shift], close[futureShift]);
+            if(ShowResultArrows)
+            {
+               if(close[futureShift] > close[shift])
+                  SuccessBuffer[shift] = low[shift] - 38 * _Point;
+               else
+                  FailureBuffer[shift] = low[shift] - 38 * _Point;
+            }
+            if(ShowPipLabels)
+               DrawPipLabel(time[shift], low[shift] - 58 * _Point, pnl);
          }
       }
       else if(signal == -1)
       {
          if(ShowSignalArrows)
             SellSignalBuffer[shift] = high[shift] + 12 * _Point;
-         if(ShowResultArrows && futureShift >= 1)
+         if(futureShift >= 1)
          {
-            if(close[futureShift] < close[shift])
-               SuccessBuffer[shift] = high[shift] + 38 * _Point;
-            else
-               FailureBuffer[shift] = high[shift] + 38 * _Point;
+            double pnl = CalcDisplayProfit(-1, close[shift], close[futureShift]);
+            if(ShowResultArrows)
+            {
+               if(close[futureShift] < close[shift])
+                  SuccessBuffer[shift] = high[shift] + 38 * _Point;
+               else
+                  FailureBuffer[shift] = high[shift] + 38 * _Point;
+            }
+            if(ShowPipLabels)
+               DrawPipLabel(time[shift], high[shift] + 58 * _Point, pnl);
          }
       }
    }
+   if(ShowPipLabels)
+      ChartRedraw(0);
 }
 
 
@@ -1007,6 +1081,7 @@ void OnDeinit(const int reason)
       IndicatorRelease(Handle2);
    if(HandleTrend != INVALID_HANDLE)
       IndicatorRelease(HandleTrend);
+   DeletePipLabels();
    Comment("");
 }
 
