@@ -177,6 +177,11 @@ input bool             ShowTrendLine    = true;
 input bool             ShowStatistics   = true;
 input bool             ShowPipLabels    = true;
 input int              MaxPipLabels     = 80;
+input bool             ShowCandleTimer  = true;
+input color            TimerColor       = C'0,230,180';
+input int              TimerFontSize    = 11;
+input int              TimerX           = 12;
+input int              TimerY           = 18;
 input ENUM_PROFIT_UNIT ProfitUnit       = UNIT_PIPS;
 input int              PipLabelFontSize = 9;
 input color            ProfitLabelColor = C'0,230,180';
@@ -1098,6 +1103,12 @@ int OnInit()
    PlotIndexSetDouble(5, PLOT_EMPTY_VALUE, EMPTY_VALUE);
 
    IndicatorSetString(INDICATOR_SHORTNAME, "Strategy Combiner v1.2");
+
+   if(ShowCandleTimer)
+   {
+      EventSetTimer(1);
+      UpdateCandleTimer();
+   }
    return INIT_SUCCEEDED;
 }
 
