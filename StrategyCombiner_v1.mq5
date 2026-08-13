@@ -350,6 +350,71 @@ string ProfitUnitText()
 
 #define SC_PL_PREFIX "SC_PL_"
 
+#define SC_TIMER_NAME  "SC_CANDLE_TIMER"
+
+string FormatRemain(const int sec)
+{
+   int s = (sec < 0) ? 0 : sec;
+   int h = s / 3600;
+   int m = (s % 3600) / 60;
+   int r = s % 60;
+   if(h > 0)
+      return StringFormat("%02d:%02d:%02d", h, m, r);
+   return StringFormat("%02d:%02d", m, r);
+}
+
+void DeleteCandleTimer()
+{
+   ObjectDelete(0, SC_TIMER_NAME);
+}
+
+void UpdateCandleTimer()
+{
+   if(!ShowCandleTimer)
+   {
+      DeleteCandleTimer();
+      return;
+   }
+
+   datetime barStart = iTime(_Symbol, _Period, 0);
+   if(barStart <= 0)
+      return;
+
+   int periodSec = PeriodSeconds(_Period);
+   if(periodSec <= 0)
+      return;
+
+   int remain = periodSec - (int)(TimeCurrent() - barStart);
+   if(remain < 0)
+      remain = 0;
+
+   string tfName = EnumToString(_Period);
+   if(StringFind(tfName, "PERIOD_") == 0)
+      tfName = StringSubstr(tfName, 7);
+
+   string text = tfName + "  " + FormatRemain(remain) +
+                 "\n" + TimeToString(barStart, TIME_MINUTES);
+
+   if(ObjectFind(0, SC_TIMER_NAME) < 0)
+   {
+      if(!ObjectCreate(0, SC_TIMER_NAME, OBJ_LABEL, 0, 0, 0))
+         return;
+   }
+
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_CORNER, CORNER_RIGHT_UPPER);
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_ANCHOR, ANCHOR_RIGHT_UPPER);
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_XDISTANCE, TimerX);
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_YDISTANCE, TimerY);
+   ObjectSetString(0, SC_TIMER_NAME, OBJPROP_TEXT, text);
+   ObjectSetString(0, SC_TIMER_NAME, OBJPROP_FONT, "Consolas");
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_FONTSIZE, TimerFontSize);
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_COLOR, TimerColor);
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_SELECTABLE, false);
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_HIDDEN, true);
+   ObjectSetInteger(0, SC_TIMER_NAME, OBJPROP_BACK, false);
+}
+
+
 void DeletePipLabels()
 {
    ObjectsDeleteAll(0, SC_PL_PREFIX);
@@ -1121,7 +1186,14 @@ void OnDeinit(const int reason)
    if(HandleTrend != INVALID_HANDLE)
       IndicatorRelease(HandleTrend);
    DeletePipLabels();
+   DeleteCandleTimer();
+   EventKillTimer();
    Comment("");
+}
+
+void OnTimer()
+{
+   UpdateCandleTimer();
 }
 
 
