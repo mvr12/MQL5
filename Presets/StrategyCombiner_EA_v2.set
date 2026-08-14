@@ -1,0 +1,21 @@
+; StrategyCombiner_EA_v2 inputs for Strategy Tester / live
+CombinerName=comb082
+CombinerPrefix=comb
+AllowBuy=true
+AllowSell=true
+CloseAfterNBars=true
+ExitBars=2
+CloseOpposite=false
+OnePositionOnly=true
+TradeOnlyNewBar=true
+TradeClosedBarOnStart=true
+MaxSpreadPoints=40
+MagicNumber=20260814
+SlippagePoints=20
+TradeComment=SC_EA_v2
+ShowPanel=true
+LotMode=0
+FixedLot=0.10
+RiskPercent=1.0
+StopLossPoints=0
+TakeProfitPoints=0

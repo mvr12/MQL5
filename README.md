@@ -60,10 +60,23 @@
 
 ## 📂 ساختار فایل‌ها
 
-- `Indicators/StrategyCombiner_v1.mq5`: فایل اصلی اندیکاتور (مسیر استاندارد MQL5).
+- `Indicators/StrategyCombiner_v1.mq5`: اندیکاتور نسخه ۱ (بدون تغییر نگه داشته می‌شود).
 - `StrategyCombiner_v1.mq5`: کپی فایل در ریشه مخزن جهت دسترسی سریع.
-- `Experts/StrategyCombiner_EA_v1.mq5`: اکسپرت معامله‌گر خودکار با همان تنظیمات Combiner.
-- `StrategyCombiner_EA_v1.mq5`: کپی اکسپرت در ریشه مخزن.
+- `Indicators/comb082.mq5`: نسخه جدا روی git — Combiner برای چارت و تستر (`comb082.ex5`).
+- `Experts/StrategyCombiner_EA_v1.mq5`: اکسپرت قدیمی با همه تنظیمات Combiner.
+- `Experts/StrategyCombiner_EA_v2.mq5`: اکسپرت جدید؛ تنظیمات سیگنال را از `comb082` روی چارت می‌گیرد.
+- `Presets/StrategyCombiner_EA_v2.set`: ورودی‌های تستر/لایو.
+- `tester/StrategyCombiner_EA_v2.ini`: کانفیگ اختیاری Strategy Tester.
+
+### نسخه comb082 + EA v2
+
+تنظیمات Ind1/Ind2، روند، زاویه، کراس، روز/ساعت فقط داخل **اندیکاتور `comb082`** است. اکسپرت فقط بافر خرید/فروش را می‌خواند و بعد از `ExitBars` کندل می‌بندد.
+
+1. `Indicators/comb082.mq5` را کامپایل کنید تا `comb082.ex5` ساخته شود.
+2. `comb082` را روی چارت بگذارید و فیلترها را همان‌جا تنظیم کنید.
+3. `Experts/StrategyCombiner_EA_v2.mq5` را کامپایل و روی **همان چارت** بیندازید. `CombinerName=comb082`.
+4. پنل EA گوشه **بالا-راست** با فونت کوچک است (مخالف پنل Comment اندیکاتور در چپ).
+5. Strategy Tester: خطای اول تستر از نبودن INI نبود. تستر وقتی `iCustom` اسم متغیر داشته باشد اندیکاتور را بسته‌بندی نمی‌کند. EA v2 اسم ثابت `"comb082"` و `#property tester_indicator "comb082"` دارد. پیش‌فرض `UseIndicator2=false` در comb082 تا OnInit تستر نترکد. فایل `tester/StrategyCombiner_EA_v2.ini` فقط برای اجرای command-line است.
 
 ### اکسپرت خودکار (`StrategyCombiner_EA_v1`)
 
