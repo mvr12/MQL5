@@ -6,7 +6,9 @@
 //+------------------------------------------------------------------+
 #property strict
 #property copyright "Strategy Combiner"
-#property version   "1.10"
+#property version   "1.20"
+#property description "Auto trader for StrategyCombiner_v1. Put Combiner on the chart or compile it first."
+#property tester_indicator "StrategyCombiner_v1"
 
 #include <Trade/Trade.mqh>
 
@@ -59,6 +61,13 @@ enum ENUM_LOT_MODE
    LOT_RISK_PERCENT = 1
 };
 
+enum ENUM_COMBINER_SOURCE
+{
+   COMBINER_CHART_THEN_FILE = 0, // اول اندیکاتور روی همین چارت، بعد فایل
+   COMBINER_CHART_ONLY      = 1,
+   COMBINER_FILE_ONLY       = 2
+};
+
 
 //==================================================================
 //  SAME SETTINGS AS THE INDICATOR
@@ -71,7 +80,7 @@ input int            Indicator1_BuyBuffer  = 0;
 input int            Indicator1_SellBuffer = 1;
 
 input group "=== Custom Indicator 2 ==="
-input bool           UseIndicator2         = true;
+input bool           UseIndicator2         = false; // پیش‌فرض خاموش تا بدون فایل دوم EA حذف نشود
 input ENUM_SLOT_MODE Indicator2_Mode       = SLOT_MODE_BUFFERS;
 input string         Indicator2_Name       = "MySecondIndicator";
 input int            Indicator2_BuyBuffer  = 0;
@@ -132,30 +141,42 @@ input int    EndMinute        = 59;
 input group "=== Auto Trade ==="
 input bool         AllowBuy           = true;
 input bool         AllowSell          = true;
-input bool         CloseAfterNBars    = true;   // مثل اندیکاتور: بعد از N کندل ببند
-input bool         CloseOpposite      = false;  // سیگنال مخالف قبل از N کندل؟ پیش‌فرض خیر
+input bool         CloseAfterNBars    = true;
+input bool         CloseOpposite      = false;
 input bool         OnePositionOnly    = true;
 input bool         TradeOnlyNewBar    = true;
+input bool         TradeClosedBarOnStart = true; // همان لحظه نصب، سیگنال کندل بسته را بگیر
 input int          MaxSpreadPoints    = 40;
 input ulong        MagicNumber        = 20260814;
 input int          SlippagePoints     = 20;
 input string       TradeComment       = "SC_EA_v1";
+input bool         ShowStatusPanel    = true;
 
 input group "=== Money Management ==="
 input ENUM_LOT_MODE LotMode           = LOT_FIXED;
 input double        FixedLot          = 0.10;
-input double        RiskPercent       = 1.0;   // فقط اگر SL اضطراری > 0
-input int           StopLossPoints    = 0;     // 0 = بدون SL — خروج اصلی N کندل است
-input int           TakeProfitPoints  = 0;     // 0 = بدون TP — خروج اصلی N کندل است
+input double        RiskPercent       = 1.0;
+input int           StopLossPoints    = 0;
+input int           TakeProfitPoints  = 0;
 
 input group "=== Combiner File ==="
-input string        CombinerName      = "StrategyCombiner_v1";
+input ENUM_COMBINER_SOURCE CombinerSource    = COMBINER_CHART_THEN_FILE;
+input string               CombinerName      = "StrategyCombiner_v1";
+input string               CombinerShortName = "Strategy Combiner";
 
+
+#define SC_EA_STATUS_NAME "SC_EA_STATUS"
 
 CTrade   trade;
 int      g_handle = INVALID_HANDLE;
+bool     g_handleFromChart = false;
+string   g_handleSource = "";
+string   g_lastError = "";
+string   g_lastAction = "init";
 datetime g_lastBar = 0;
 datetime g_lastSignalBar = 0;
+datetime g_lastRetry = 0;
+bool     g_startCheckDone = false;
 
 
 bool IsSignalValue(const double v)
@@ -169,34 +190,105 @@ bool IsSignalValue(const double v)
    return true;
 }
 
-int CombinerHandle()
+void SetupFilling()
 {
-   // Display flags: arrows ON so BUY/SELL buffers are filled.
-   // Other visuals OFF so the hidden iCustom instance does not spam objects.
-   return iCustom(
+   const long mode = SymbolInfoInteger(_Symbol, SYMBOL_FILLING_MODE);
+   if((mode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      trade.SetTypeFilling(ORDER_FILLING_IOC);
+   else if((mode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      trade.SetTypeFilling(ORDER_FILLING_FOK);
+   else
+      trade.SetTypeFilling(ORDER_FILLING_RETURN);
+}
+
+bool TradeAllowed(string &why)
+{
+   if(!TerminalInfoInteger(TERMINAL_CONNECTED))
+   {
+      why = "terminal not connected";
+      return false;
+   }
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED))
+   {
+      why = "AutoTrading is OFF (toolbar button)";
+      return false;
+   }
+   if(!MQLInfoInteger(MQL_TRADE_ALLOWED))
+   {
+      why = "EA live trading checkbox is OFF";
+      return false;
+   }
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED))
+   {
+      why = "account trading disabled";
+      return false;
+   }
+   if(!AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+   {
+      why = "account experts disabled";
+      return false;
+   }
+   const long smode = SymbolInfoInteger(_Symbol, SYMBOL_TRADE_MODE);
+   if(smode == SYMBOL_TRADE_MODE_DISABLED)
+   {
+      why = "symbol trade disabled";
+      return false;
+   }
+   why = "OK";
+   return true;
+}
+
+int FindChartCombiner()
+{
+   const int total = ChartIndicatorsTotal(0, 0);
+   for(int i = 0; i < total; i++)
+   {
+      const string name = ChartIndicatorName(0, 0, i);
+      if(name == "")
+         continue;
+      if(StringFind(name, CombinerShortName) < 0 &&
+         StringFind(name, "StrategyCombiner") < 0 &&
+         StringFind(name, CombinerName) < 0)
+         continue;
+
+      const int h = ChartIndicatorGet(0, 0, name);
+      if(h != INVALID_HANDLE)
+      {
+         g_handleSource = "chart:" + name;
+         Print("EA: using Combiner already on chart: ", name, " handle=", h);
+         return h;
+      }
+   }
+   return INVALID_HANDLE;
+}
+
+int LoadCombinerFile(const string name)
+{
+   ResetLastError();
+   const int h = iCustom(
       _Symbol,
       _Period,
-      CombinerName,
+      name,
       UseIndicator1,
-      Indicator1_Mode,
+      (int)Indicator1_Mode,
       Indicator1_Name,
       Indicator1_BuyBuffer,
       Indicator1_SellBuffer,
       UseIndicator2,
-      Indicator2_Mode,
+      (int)Indicator2_Mode,
       Indicator2_Name,
       Indicator2_BuyBuffer,
       Indicator2_SellBuffer,
       UseTrendIndicator,
       UseTrendLineFilter,
-      TrendSource,
+      (int)TrendSource,
       TrendMA_Period,
       TrendMA_Method,
       TrendMA_AppliedPrice,
       TrendIndicator_Name,
       TrendIndicator_Buffer,
-      TrendCompareWith,
-      TrendSideRule,
+      (int)TrendCompareWith,
+      (int)TrendSideRule,
       UseTrendAngleFilter,
       TrendAnglePeriod,
       AngleBuyFrom,
@@ -204,7 +296,7 @@ int CombinerHandle()
       AngleSellFrom,
       AngleSellTo,
       UseTrendLineCross,
-      TrendCrossRole,
+      (int)TrendCrossRole,
       TrendLine1_Buffer,
       TrendLine2_Buffer,
       StatsLookbackBars,
@@ -225,11 +317,177 @@ int CombinerHandle()
       8,
       12,
       18,
-      UNIT_PIPS,
+      (int)UNIT_PIPS,
       8,
       clrNONE,
       clrNONE
    );
+   if(h == INVALID_HANDLE)
+   {
+      Print("EA: iCustom failed name=", name, " err=", GetLastError(),
+            "  Ind1=", Indicator1_Name, " use1=", UseIndicator1,
+            "  Ind2=", Indicator2_Name, " use2=", UseIndicator2);
+   }
+   else
+   {
+      g_handleSource = "file:" + name;
+      Print("EA: loaded Combiner file ", name, " handle=", h);
+   }
+   return h;
+}
+
+void ReleaseOurHandle()
+{
+   if(g_handle != INVALID_HANDLE && !g_handleFromChart)
+      IndicatorRelease(g_handle);
+   g_handle = INVALID_HANDLE;
+   g_handleFromChart = false;
+   g_handleSource = "";
+}
+
+bool EnsureCombinerHandle()
+{
+   if(g_handle != INVALID_HANDLE)
+      return true;
+
+   if(g_lastRetry != 0 && TimeCurrent() == g_lastRetry)
+      return false;
+   g_lastRetry = TimeCurrent();
+
+   int h = INVALID_HANDLE;
+   bool fromChart = false;
+
+   if(CombinerSource != COMBINER_FILE_ONLY)
+   {
+      h = FindChartCombiner();
+      fromChart = (h != INVALID_HANDLE);
+   }
+
+   if(h == INVALID_HANDLE && CombinerSource != COMBINER_CHART_ONLY)
+   {
+      string names[4];
+      names[0] = CombinerName;
+      names[1] = "StrategyCombiner_v1";
+      names[2] = CombinerName + ".ex5";
+      names[3] = "StrategyCombiner_v1.ex5";
+      for(int i = 0; i < 4; i++)
+      {
+         if(names[i] == "")
+            continue;
+         if(i > 0 && names[i] == names[0])
+            continue;
+         h = LoadCombinerFile(names[i]);
+         if(h != INVALID_HANDLE)
+            break;
+      }
+      fromChart = false;
+   }
+
+   if(h == INVALID_HANDLE)
+   {
+      g_lastError = "Combiner load failed. Compile Indicators/StrategyCombiner_v1.mq5 OR drop Combiner on this chart. If UseIndicator2=true, that file must exist.";
+      return false;
+   }
+
+   if(g_handle != INVALID_HANDLE && g_handle != h)
+      ReleaseOurHandle();
+
+   g_handle = h;
+   g_handleFromChart = fromChart;
+   g_lastError = "";
+   return true;
+}
+
+void DeleteStatusPanel()
+{
+   ObjectsDeleteAll(0, SC_EA_STATUS_NAME);
+}
+
+void UpdateStatusPanel(const string text)
+{
+   if(!ShowStatusPanel)
+   {
+      DeleteStatusPanel();
+      return;
+   }
+
+   string lines[];
+   const int n = StringSplit(text, '\n', lines);
+   for(int i = 0; i < n; i++)
+   {
+      const string name = SC_EA_STATUS_NAME + IntegerToString(i);
+      if(ObjectFind(0, name) < 0)
+      {
+         if(!ObjectCreate(0, name, OBJ_LABEL, 0, 0, 0))
+            continue;
+      }
+      ObjectSetInteger(0, name, OBJPROP_CORNER, CORNER_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
+      ObjectSetInteger(0, name, OBJPROP_XDISTANCE, 8);
+      ObjectSetInteger(0, name, OBJPROP_YDISTANCE, 16 + i * 16);
+      ObjectSetString(0, name, OBJPROP_TEXT, lines[i]);
+      ObjectSetString(0, name, OBJPROP_FONT, "Consolas");
+      ObjectSetInteger(0, name, OBJPROP_FONTSIZE, 10);
+      ObjectSetInteger(0, name, OBJPROP_COLOR, (StringFind(lines[i], "ERR") == 0) ? clrOrangeRed : C'0,230,180');
+      ObjectSetInteger(0, name, OBJPROP_SELECTABLE, false);
+      ObjectSetInteger(0, name, OBJPROP_HIDDEN, true);
+      ObjectSetInteger(0, name, OBJPROP_BACK, false);
+   }
+
+   for(int i = n; i < 16; i++)
+      ObjectDelete(0, SC_EA_STATUS_NAME + IntegerToString(i));
+}
+
+string SignalText(const int s)
+{
+   if(s > 0) return "BUY";
+   if(s < 0) return "SELL";
+   return "NONE";
+}
+
+int ReadClosedBarSignal(string &note)
+{
+   if(g_handle == INVALID_HANDLE)
+   {
+      note = "no combiner handle";
+      return 0;
+   }
+
+   const int calc = BarsCalculated(g_handle);
+   if(calc <= 0)
+   {
+      note = "combiner not calculated yet (" + IntegerToString(calc) + ")";
+      return 0;
+   }
+   if(calc < BarsForward + 5)
+   {
+      note = "not enough calculated bars " + IntegerToString(calc);
+      return 0;
+   }
+
+   double buy[], sell[];
+   ArrayResize(buy, 3);
+   ArrayResize(sell, 3);
+   ArraySetAsSeries(buy, true);
+   ArraySetAsSeries(sell, true);
+
+   const int cb = CopyBuffer(g_handle, 0, 0, 3, buy);
+   const int cs = CopyBuffer(g_handle, 1, 0, 3, sell);
+   if(cb < 2 || cs < 2)
+   {
+      note = "CopyBuffer failed buy=" + IntegerToString(cb) + " sell=" + IntegerToString(cs);
+      return 0;
+   }
+
+   const bool buySig  = IsSignalValue(buy[1]);
+   const bool sellSig = IsSignalValue(sell[1]);
+   note = "buyBuf=" + (buySig ? "Y" : "N") + " sellBuf=" + (sellSig ? "Y" : "N");
+
+   if(buySig && !sellSig)
+      return 1;
+   if(sellSig && !buySig)
+      return -1;
+   return 0;
 }
 
 bool IsNewBar()
@@ -241,33 +499,6 @@ bool IsNewBar()
       return false;
    g_lastBar = t;
    return true;
-}
-
-int CurrentSignal()
-{
-   if(g_handle == INVALID_HANDLE)
-      return 0;
-   if(BarsCalculated(g_handle) < BarsForward + 5)
-      return 0;
-
-   double buy[2], sell[2];
-   ArraySetAsSeries(buy, true);
-   ArraySetAsSeries(sell, true);
-
-   if(CopyBuffer(g_handle, 0, 0, 2, buy) < 2)
-      return 0;
-   if(CopyBuffer(g_handle, 1, 0, 2, sell) < 2)
-      return 0;
-
-   // shift 1 = last closed candle (same as indicator arrows)
-   const bool buySig  = IsSignalValue(buy[1]);
-   const bool sellSig = IsSignalValue(sell[1]);
-
-   if(buySig && !sellSig)
-      return 1;
-   if(sellSig && !buySig)
-      return -1;
-   return 0;
 }
 
 int CountMyPositions(const int typeFilter = -1)
@@ -321,7 +552,6 @@ datetime PositionSignalBarTime()
       if(t > 0)
          return (datetime)t;
    }
-   // fallback: entry time ≈ bar after signal
    return (datetime)PositionGetInteger(POSITION_TIME);
 }
 
@@ -331,9 +561,6 @@ bool PositionHasEncodedSignalBar()
    return (StringFind(c, "|") >= 0);
 }
 
-// Indicator: result is known when the Nth candle AFTER the signal bar has closed.
-// Signal at shift S → evaluate at S - BarsForward, and that bar must be closed (shift >= 1).
-// So we close when the signal candle is at least BarsForward+1 bars back.
 bool NBarsCompleted(const datetime signalOrEntry, const bool encodedSignalBar)
 {
    int n = BarsForward;
@@ -346,8 +573,6 @@ bool NBarsCompleted(const datetime signalOrEntry, const bool encodedSignalBar)
 
    if(encodedSignalBar)
       return (sh >= n + 1);
-
-   // fallback from POSITION_TIME (opened on the bar after signal)
    return (sh >= n);
 }
 
@@ -372,10 +597,15 @@ void CloseExpiredNBarPositions()
          continue;
 
       if(trade.PositionClose(ticket))
-         Print("EA: closed after ", BarsForward, " candles. ticket=", ticket);
+      {
+         g_lastAction = "closed after N=" + IntegerToString(BarsForward) + " ticket=" + IntegerToString((long)ticket);
+         Print("EA: ", g_lastAction);
+      }
       else
-         Print("EA: N-bar close failed ticket=", ticket, " ",
-               trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+      {
+         g_lastAction = "N-bar close failed " + trade.ResultRetcodeDescription();
+         Print("EA: ", g_lastAction);
+      }
    }
 }
 
@@ -386,12 +616,17 @@ double NormalizeLot(double lot)
    double step    = SymbolInfoDouble(_Symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0.0)
       step = 0.01;
-   lot = MathFloor(lot / step) * step;
+   lot = MathFloor(lot / step + 1e-12) * step;
    if(lot < minLot)
       lot = minLot;
    if(lot > maxLot)
       lot = maxLot;
-   return NormalizeDouble(lot, 2);
+   int digits = 2;
+   if(step < 0.01)
+      digits = 3;
+   if(step < 0.001)
+      digits = 4;
+   return NormalizeDouble(lot, digits);
 }
 
 double CalcLot(const double slPrice, const bool isBuy)
@@ -424,15 +659,59 @@ bool SpreadOk()
    return (MaxSpreadPoints <= 0 || spread <= MaxSpreadPoints);
 }
 
+bool SendOrder(const int signal, const double lot, const double sl, const double tp, const string comment)
+{
+   const ENUM_ORDER_TYPE_FILLING fills[3] =
+   {
+      ORDER_FILLING_IOC,
+      ORDER_FILLING_FOK,
+      ORDER_FILLING_RETURN
+   };
+
+   for(int i = 0; i < 3; i++)
+   {
+      trade.SetTypeFilling(fills[i]);
+      bool ok = false;
+      if(signal == 1)
+         ok = trade.Buy(lot, _Symbol, 0.0, sl, tp, comment);
+      else
+         ok = trade.Sell(lot, _Symbol, 0.0, sl, tp, comment);
+      if(ok)
+         return true;
+
+      const uint rc = trade.ResultRetcode();
+      Print("EA order try fill=", fills[i], " rc=", rc, " ", trade.ResultRetcodeDescription());
+      if(rc != TRADE_RETCODE_INVALID_FILL)
+         break;
+   }
+   return false;
+}
+
 bool OpenTrade(const int signal, const datetime signalBar)
 {
    if(signal == 1 && !AllowBuy)
+   {
+      g_lastAction = "BUY blocked by AllowBuy=false";
       return false;
+   }
    if(signal == -1 && !AllowSell)
+   {
+      g_lastAction = "SELL blocked by AllowSell=false";
       return false;
+   }
+
+   string why;
+   if(!TradeAllowed(why))
+   {
+      g_lastAction = "trade not allowed: " + why;
+      Print("EA: ", g_lastAction);
+      return false;
+   }
+
    if(!SpreadOk())
    {
-      Print("EA: spread too high");
+      g_lastAction = "spread too high " + IntegerToString((int)SymbolInfoInteger(_Symbol, SYMBOL_SPREAD));
+      Print("EA: ", g_lastAction);
       return false;
    }
 
@@ -449,27 +728,33 @@ bool OpenTrade(const int signal, const datetime signalBar)
          sl = NormalizeDouble(ask - StopLossPoints * point, digits);
       if(TakeProfitPoints > 0)
          tp = NormalizeDouble(ask + TakeProfitPoints * point, digits);
-      double lot = CalcLot(sl, true);
-      if(!trade.Buy(lot, _Symbol, ask, sl, tp, comment))
-      {
-         Print("EA BUY failed: ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
-         return false;
-      }
-      Print("EA BUY lot=", lot, " hold=", BarsForward, " bars  sl=", sl, " tp=", tp);
-      return true;
+   }
+   else
+   {
+      if(StopLossPoints > 0)
+         sl = NormalizeDouble(bid + StopLossPoints * point, digits);
+      if(TakeProfitPoints > 0)
+         tp = NormalizeDouble(bid - TakeProfitPoints * point, digits);
    }
 
-   if(StopLossPoints > 0)
-      sl = NormalizeDouble(bid + StopLossPoints * point, digits);
-   if(TakeProfitPoints > 0)
-      tp = NormalizeDouble(bid - TakeProfitPoints * point, digits);
-   double lot = CalcLot(sl, false);
-   if(!trade.Sell(lot, _Symbol, bid, sl, tp, comment))
+   double lot = CalcLot(sl, signal == 1);
+   if(lot <= 0.0)
    {
-      Print("EA SELL failed: ", trade.ResultRetcode(), " ", trade.ResultRetcodeDescription());
+      g_lastAction = "invalid lot";
       return false;
    }
-   Print("EA SELL lot=", lot, " hold=", BarsForward, " bars  sl=", sl, " tp=", tp);
+
+   if(!SendOrder(signal, lot, sl, tp, comment))
+   {
+      g_lastAction = "order failed " + IntegerToString((int)trade.ResultRetcode()) +
+                     " " + trade.ResultRetcodeDescription();
+      Print("EA: ", g_lastAction);
+      return false;
+   }
+
+   g_lastAction = SignalText(signal) + " opened lot=" + DoubleToString(lot, 2) +
+                  " hold=" + IntegerToString(BarsForward) + " bars";
+   Print("EA: ", g_lastAction);
    return true;
 }
 
@@ -491,10 +776,54 @@ void ProcessSignal(const int signal)
    }
 
    if(OnePositionOnly && CountMyPositions() > 0)
+   {
+      g_lastAction = "signal " + SignalText(signal) + " skipped: already in position";
       return;
+   }
 
    if(OpenTrade(signal, closedBar))
       g_lastSignalBar = closedBar;
+}
+
+void RefreshStatus(const int signal, const string sigNote, const bool tradingNow)
+{
+   string why;
+   TradeAllowed(why);
+   const int calc = (g_handle == INVALID_HANDLE) ? -1 : BarsCalculated(g_handle);
+   const long spread = SymbolInfoInteger(_Symbol, SYMBOL_SPREAD);
+
+   string text =
+      "SC EA v1.20  " + _Symbol + " " + EnumToString(_Period) + "\n" +
+      "source : " + (g_handleSource == "" ? "NONE" : g_handleSource) + "\n" +
+      "calc   : " + IntegerToString(calc) + "   handle=" + IntegerToString(g_handle) + "\n" +
+      "signal : " + SignalText(signal) + "  (" + sigNote + ")\n" +
+      "exit   : after " + IntegerToString(BarsForward) + " candles\n" +
+      "pos    : " + IntegerToString(CountMyPositions()) +
+      "   spread=" + IntegerToString((int)spread) + "\n" +
+      "algo   : " + why + "\n" +
+      "work   : " + (tradingNow ? "checking bar" : "wait new bar") + "\n" +
+      "last   : " + g_lastAction;
+
+   if(g_lastError != "")
+      text += "\nERR: " + g_lastError;
+
+   UpdateStatusPanel(text);
+}
+
+void RunEA(const bool tradingNow)
+{
+   EnsureCombinerHandle();
+
+   string sigNote = "";
+   const int signal = ReadClosedBarSignal(sigNote);
+
+   if(tradingNow)
+   {
+      CloseExpiredNBarPositions();
+      ProcessSignal(signal);
+   }
+
+   RefreshStatus(signal, sigNote, tradingNow);
 }
 
 int OnInit()
@@ -507,41 +836,65 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
-   trade.SetTypeFillingBySymbol(_Symbol);
+   SetupFilling();
 
-   g_handle = CombinerHandle();
+   g_startCheckDone = false;
+   g_lastBar = 0;
+   g_lastRetry = 0;
+   g_lastAction = "started";
+
+   EnsureCombinerHandle();
    if(g_handle == INVALID_HANDLE)
    {
-      Print("ERROR: Cannot load ", CombinerName,
-            " — compile Indicators/StrategyCombiner_v1.mq5 first. Err=", GetLastError());
-      return INIT_FAILED;
+      Print("EA WARNING: Combiner not loaded yet. EA stays on chart and retries. ", g_lastError);
+      Print("Tip: drop StrategyCombiner_v1 on this same chart, or compile it in MQL5/Indicators/.");
+      Print("If you do not use a second indicator, set UseIndicator2=false.");
    }
 
-   g_lastBar = iTime(_Symbol, _Period, 0);
-   Print("StrategyCombiner EA ready. Combiner=", CombinerName,
-         "  exit after ", BarsForward, " candles (CloseAfterNBars=",
-         (CloseAfterNBars ? "ON" : "OFF"), ")");
+   EventSetTimer(1);
+   RunEA(false);
+
+   string why;
+   TradeAllowed(why);
+   Print("StrategyCombiner EA ready. source=", g_handleSource,
+         " algo=", why, " exit N=", BarsForward);
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason)
 {
-   if(g_handle != INVALID_HANDLE)
-      IndicatorRelease(g_handle);
+   EventKillTimer();
+   DeleteStatusPanel();
+   ReleaseOurHandle();
+}
+
+void OnTimer()
+{
+   const bool newBar = IsNewBar();
+   bool tradingNow = false;
+   if(TradeClosedBarOnStart && !g_startCheckDone)
+   {
+      tradingNow = true;
+      g_startCheckDone = true;
+   }
+   else if(!TradeOnlyNewBar || newBar)
+      tradingNow = true;
+
+   RunEA(tradingNow);
 }
 
 void OnTick()
 {
-   if(TradeOnlyNewBar)
+   const bool newBar = IsNewBar();
+   bool tradingNow = false;
+   if(TradeClosedBarOnStart && !g_startCheckDone)
    {
-      if(!IsNewBar())
-         return;
+      tradingNow = true;
+      g_startCheckDone = true;
    }
-   else
-      IsNewBar();
+   else if(!TradeOnlyNewBar || newBar)
+      tradingNow = true;
 
-   // First close trades whose N candles have finished — same rule as the indicator.
-   CloseExpiredNBarPositions();
-   ProcessSignal(CurrentSignal());
+   RunEA(tradingNow);
 }
 //+------------------------------------------------------------------+
